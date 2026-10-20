@@ -1,6 +1,6 @@
 # verify-hundred proof run, 2026-10-20
 
-Produced by `.agents/skills/verify-hundred/bin/verify-hundred` on Linux x86-64 (Hyprland workstation, private Xvfb displays). The skill was at 2dfd8a5 for `native/`, `native-sync/`, `acceptance.txt`, `local/` and `sync/`, and at 3969955 for `doctor-prod.txt` and `sign-in/`. Only documentation changed between them. Every store was disposable and synthetic, except the read-only owner sign-in. Its full screenshot holds real history, so it was kept outside Git. The server origin and owner label are redacted.
+Produced by `.agents/skills/verify-hundred/bin/verify-hundred` on Linux x86-64 (Hyprland workstation, private Xvfb displays). The skill was at 3af8581 for `native/`, after the walk began polling instead of sleeping, and at 2dfd8a5 for `native-sync/`, `acceptance.txt`, `local/` and `sync/`, and at 3969955 for `doctor-prod.txt` and `sign-in/`. Only documentation changed between them. Every store was disposable and synthetic, except the read-only owner sign-in. Its full screenshot holds real history, so it was kept outside Git. The server origin and owner label are redacted.
 
 | Path | Command | Shows |
 |---|---|---|
