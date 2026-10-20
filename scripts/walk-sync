@@ -25,7 +25,11 @@ for n in $(seq 100 299); do
   xvfb_pid=$!
   for _ in $(seq 1 50); do
     kill -0 "$xvfb_pid" 2>/dev/null || break
-    if [ -S "/tmp/.X11-unix/X$n" ]; then display=$n; break; fi
+    # Only our own Xvfb's lock counts; another run may have won :$n.
+    if [ -S "/tmp/.X11-unix/X$n" ] && [ "$(tr -d ' \n' < "/tmp/.X$n-lock" 2>/dev/null)" = "$xvfb_pid" ]; then
+      display=$n
+      break
+    fi
     sleep .1
   done
   [ -z "$display" ] || break

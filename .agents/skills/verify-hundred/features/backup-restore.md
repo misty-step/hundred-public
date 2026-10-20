@@ -19,6 +19,7 @@ The owner exports a version-1 JSON archive of every set and cancellation, includ
 Preconditions:
 
 - An offline session with a set and an undone set: `$V app start`, log `20` squats, log `10` push-ups, then `$V app key ctrl+z`.
+- `<run>` below is the `evidence` directory `app start` printed.
 
 - **Export.** Run `$V app cli export <run>/archive.json`. Stdout reads `Exported 3 records.` and `stat -c %a <run>/archive.json` prints `600`.
 - **No overwrite.** Run `$V app cli export <run>/archive.json` again. It exits 1 with `Choose a new archive filename`, and `sha256sum` of the file is unchanged.

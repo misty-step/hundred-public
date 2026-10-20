@@ -22,16 +22,16 @@ With a server and token configured, the app syncs in the background after every 
 
 Preconditions:
 
-- `$V worker start` printed `server http://127.0.0.1:8798` and two `token-file` paths. Call them `$A` (`synthetic-a`) and `$B` (`synthetic-b`).
+- `$V worker start` printed `server http://127.0.0.1:8798` and two `token-file` paths. Call them `$A` (`synthetic-a`) and `$B` (`synthetic-b`). If it printed another port, use that port wherever 8798 appears below.
 - `$V app start --server http://127.0.0.1:8798 --token-file $A`, then `$V app wait-text 'Synced' 60`.
 
 - **Auto sync.** Run `$V app key ctrl+1`, `$V app key ctrl+a`, `$V app type 30`, `$V app key Return`. `$V app wait-status '.pending == 0' 45` passes and `$V app wait-text 'Synced'` matches.
 - **Backend down.** Run `$V worker stop`, log `15` crunches the same way, then `$V app key ctrl+r`. `$V app wait-text 'unreachable'` matches and `$V app wait-status '.pending == 1'` passes. Run `$V app shot backend-down`. The label reads `Server unreachable. Local sets are safe. · 1 waiting`.
 - **Restart offline.** Run `$V app restart`. `$V app status` still shows the set with `pending` at 1.
 - **Recover.** Run `$V worker start`. Without pressing anything, `$V app wait-status '.pending == 0' 60` passes within one 30-second retry. Then `$V app wait-text 'Synced'` and `$V app shot recovered`.
-- **Second desktop.** Run `HUNDRED_TOKEN=$(cat $A) target/debug/hundred --data-dir <new dir> --server http://127.0.0.1:8798 sync`, then `status` on that dir. Its totals equal `$V app status` totals. Run `sync` again and the totals do not change.
-- **Wrong identity.** Repeat with `$B` and another new dir. It prints `Synced.` and `status` shows `[0,0,0]`.
-- **Bound store.** Run `HUNDRED_TOKEN=$(cat $B) target/debug/hundred --data-dir <the $A dir> --server http://127.0.0.1:8798 sync`. It exits 1 with `This local store belongs to another server or identity.`
+- **Second desktop.** Run `HUNDRED_TOKEN=$(cat $A) target/debug/hundred --data-dir $D2 --server http://127.0.0.1:8798 sync`, with `$D2` a new empty directory, then `status` on `$D2`. Its totals equal `$V app status` totals. Run `sync` again and the totals do not change.
+- **Wrong identity.** Repeat with `$B` and another new empty directory. It prints `Synced.` and `status` shows `[0,0,0]`.
+- **Bound store.** Run `HUNDRED_TOKEN=$(cat $B) target/debug/hundred --data-dir $D2 --server http://127.0.0.1:8798 sync`. `$D2` is bound to `synthetic-a`. It exits 1 with `This local store belongs to another server or identity.`
 - **Signed out.** Run `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8798/v1/identity`. It prints `401`. `$V app start` with no server shows `sync not configured`.
 - **Scripted equivalent.** `$V walk sync` runs the HTTP/D1 acceptance (510 synthetic records, lost responses, cross-owner refusal, paging), then the outage, restart, auto-retry and second-desktop walk. It asserts on each step.
 - **Teardown.** Run `$V app stop`, then `$V worker purge`.
