@@ -1,0 +1,13 @@
+# Hundred owner sign-in, 2026-10-20T22:34:37Z
+server: <private server>; expected owner: <expected owner>; credential: pass entry from private config
+client: hundred 0.1.0 (131d4fc3e4ac7fa41abd5d223a4f5dacce6577a0)
+GET /health -> ok=true, release <private revision>
+GET /v1/identity signed out -> HTTP 401
+GET /v1/identity wrong credential -> HTTP 401 Credential rejected
+GET /v1/identity owner credential -> HTTP 200, owner matches expected: yes
+desktop app (owner credential, empty store): sync label 'Synced' visible
+desktop app: Recent sets lists the owner's sets
+CLI status on that store: pending=0, owner history pulled: true
+owner store removed; full owner screenshot kept outside the evidence directory (personal data); commit-safe header crop: owner-synced-header.png
+desktop app (random credential): 'Sync credential rejected' visible, never 'Synced'
+PASS owner sign-in: signed-out and wrong credentials refused; owner credential resolves to the expected owner, the app syncs with nothing pending, and the owner's history renders

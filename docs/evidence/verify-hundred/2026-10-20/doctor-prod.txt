@@ -1,0 +1,8 @@
+ok    tools present
+ok    wrangler installed (npm ci --ignore-scripts)
+ok    binary ~/.t3/worktrees/hundred-public/verify-verification-skill/target/debug/hundred is built from HEAD bd98f3d07f63 (got: hundred 0.1.0 (bd98f3d07f632b44b6a83f43acdbfc51a6b2eb54))
+info  live sessions: none
+info  installed app: hundred 0.1.0 (<private revision>)
+ok    <private server>/health ok (release <private revision>)
+ok    signed-out identity request refused (HTTP 401)
+ok    owner credential resolves to <expected owner> (HTTP 200)
