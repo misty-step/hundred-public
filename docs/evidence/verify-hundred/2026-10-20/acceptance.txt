@@ -1,0 +1,4 @@
+PASS offline restart, committed-response loss, retry, two desktops, undo, original local date
+PASS unauthorized access, invalid input, atomic conflict, owner isolation, credential switching
+PASS 100-record pushes, 500-record pages, fresh desktop reconstruction, full archive restore and resync
+PASS actual GPUI offline save, process restart, automatic retry without Sync, second-desktop convergence and repeated sync without duplicates

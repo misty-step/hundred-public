@@ -1,0 +1,73 @@
+$ .agents/skills/verify-hundred/bin/verify-hundred worker start
+server http://127.0.0.1:8798
+token-file ~/.cache/tmp/verify-hundred/worker/token-a   (identity synthetic-a)
+token-file ~/.cache/tmp/verify-hundred/worker/token-b   (identity synthetic-b)
+$ .agents/skills/verify-hundred/bin/verify-hundred app start --server http://127.0.0.1:8798 --token-file ~/.cache/tmp/verify-hundred/worker/token-a --evidence ~/.cache/tmp/verify-hundred/runs/proof-20261020/sync/shots
+session 20261020T220658Z-278099
+mode local
+display :103
+data ~/.cache/tmp/verify-hundred/sessions/20261020T220658Z-278099/data
+evidence ~/.cache/tmp/verify-hundred/runs/proof-20261020/sync/shots
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Synced 60
+matched: Synced
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+1
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+a
+$ .agents/skills/verify-hundred/bin/verify-hundred app type 30
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Return
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .pending == 0 45
+satisfied: .pending == 0
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Synced
+matched: Synced
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot auto-synced
+~/.cache/tmp/verify-hundred/runs/proof-20261020/sync/shots/auto-synced.png
+$ .agents/skills/verify-hundred/bin/verify-hundred worker stop
+worker stopped; D1 and identities kept for 'worker start' (purge removes them)
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+2
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+a
+$ .agents/skills/verify-hundred/bin/verify-hundred app type 15
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Return
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+r
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text unreachable
+matched: unreachable
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .pending == 1
+satisfied: .pending == 1
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot backend-down
+~/.cache/tmp/verify-hundred/runs/proof-20261020/sync/shots/backend-down.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app restart
+relaunched session 20261020T220658Z-278099
+$ sh -c .agents/skills/verify-hundred/bin/verify-hundred app status | jq -c '{totals,pending}'
+{"totals":[30,15,0],"pending":1}
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot restarted-offline
+~/.cache/tmp/verify-hundred/runs/proof-20261020/sync/shots/restarted-offline.png
+$ .agents/skills/verify-hundred/bin/verify-hundred worker start
+server http://127.0.0.1:8798
+token-file ~/.cache/tmp/verify-hundred/worker/token-a   (identity synthetic-a)
+token-file ~/.cache/tmp/verify-hundred/worker/token-b   (identity synthetic-b)
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .pending == 0 60
+satisfied: .pending == 0
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Synced
+matched: Synced
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot recovered
+~/.cache/tmp/verify-hundred/runs/proof-20261020/sync/shots/recovered.png
+$ sh -c HUNDRED_TOKEN=$(cat ~/.cache/tmp/verify-hundred/worker/token-a) target/debug/hundred --data-dir ~/.cache/tmp/verify-hundred/stores.7nE2/second --server http://127.0.0.1:8798 sync
+Synced.
+$ sh -c target/debug/hundred --data-dir ~/.cache/tmp/verify-hundred/stores.7nE2/second status | jq -c '{totals,pending}'
+{"totals":[30,15,0],"pending":0}
+$ sh -c HUNDRED_TOKEN=$(cat ~/.cache/tmp/verify-hundred/worker/token-a) target/debug/hundred --data-dir ~/.cache/tmp/verify-hundred/stores.7nE2/second --server http://127.0.0.1:8798 sync && target/debug/hundred --data-dir ~/.cache/tmp/verify-hundred/stores.7nE2/second status | jq -c .totals
+Synced.
+[30,15,0]
+$ sh -c .agents/skills/verify-hundred/bin/verify-hundred app status | jq -c .totals
+[30,15,0]
+$ sh -c HUNDRED_TOKEN=$(cat ~/.cache/tmp/verify-hundred/worker/token-b) target/debug/hundred --data-dir ~/.cache/tmp/verify-hundred/stores.7nE2/other --server http://127.0.0.1:8798 sync && target/debug/hundred --data-dir ~/.cache/tmp/verify-hundred/stores.7nE2/other status | jq -c .totals
+Synced.
+[0,0,0]
+$ HUNDRED_TOKEN=<token-b> hundred --data-dir <token-a store> sync   # expected to fail
+This local store belongs to another server or identity. Choose a separate --data-dir.
+(exit 1)
+$ curl -s -o /dev/null -w %{http_code}\n http://127.0.0.1:8798/v1/identity
+401
+$ .agents/skills/verify-hundred/bin/verify-hundred app stop
+stopped session 20261020T220658Z-278099; evidence kept at ~/.cache/tmp/verify-hundred/runs/proof-20261020/sync/shots
+$ .agents/skills/verify-hundred/bin/verify-hundred worker purge
+worker stopped; local D1 and synthetic identities removed
+PASS sync recipes

@@ -22,6 +22,8 @@ $V help
    - `--data-dir DIR` reuses a store, for example to reopen one. `--evidence DIR` sets where screenshots go.
 4. The app never opens on the operator's desktop. `WAYLAND_DISPLAY` is unset and `DISPLAY` points at the private Xvfb.
 
+The helper and `scripts/walk-native`/`scripts/walk-sync` start Xvfb on the first display from `:100` that has no lock file and no socket. Never start Xvfb with `-displayfd` on a workstation. On Hyprland it claimed `:0`, because Xwayland there has no abstract socket. It then unlinked the desktop's `/tmp/.X11-unix/X0`, and every new X11 app on the desktop broke. If `DISPLAY=:0 xdotool getdisplaygeometry` fails after a run while `/tmp/.X11-unix/X0_` still exists, `ln /tmp/.X11-unix/X0_ /tmp/.X11-unix/X0` restores it.
+
 Instances are isolated. Each session has its own Xvfb, store and runtime dir, so several can run side by side. The helper Worker uses port 8798. `scripts/test-worker` uses 8797 and 8877, so the two do not collide. The helper refuses a port it did not start.
 
 ## Doctor
@@ -58,6 +60,8 @@ Scripted journeys:
 - `$V walk native [DIR]` runs `scripts/walk-native`: keyboard and pointer logging, undo, a completed day, quit/reopen, history, the 760×640 layout, and an export/restore byte-for-byte round trip.
 - `$V walk sync [DIR]` runs `scripts/test-worker` with `HUNDRED_WALK_SYNC=1`. It covers HTTP/D1 acceptance with two synthetic identities, including cross-owner refusal, lost responses and paging. It then runs `scripts/walk-sync`: outage, restart, automatic retry without pressing Sync, and second-desktop convergence.
 - `$V sign-in [DIR]` proves owner sign-in on production, read-only. See [features/sign-in.md](features/sign-in.md).
+
+`scripts/walk-native` waits a fixed second after some keys. Under heavy CPU load, such as a parallel `cargo build`, it can fail a `status` check while the app is fine. Rerun it alone before calling that a regression.
 
 The feature map in [features/README.md](features/README.md) is the recipe source. A proof is incomplete if it skips an entry point the map lists.
 
