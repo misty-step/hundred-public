@@ -34,6 +34,7 @@ verify-hundred <command>
   app type TEXT              Type literal text into the focused field.
   app click X Y              Pointer click at window coordinates.
   app resize W H             Resize the window.
+  app scroll up|down [N]     Mouse-wheel N notches (default 4) over the window's centre.
   app shot NAME              Screenshot to <evidence>/NAME.png; prints the path.
   app ocr                    Screenshot and print OCR text.
   app wait-text REGEX [SECS] Wait until OCR text matches the extended regex (case-sensitive:
@@ -291,6 +292,15 @@ app_cmd() {
     type) [ -n "$window" ] || die "no window"; xdotool type --window "$window" "$*"; sleep .3 ;;
     click) [ -n "$window" ] || die "no window"; xdotool mousemove --window "$window" "$1" "$2" click 1; sleep .5 ;;
     resize) [ -n "$window" ] || die "no window"; xdotool windowsize "$window" "$1" "$2"; sleep .5 ;;
+    scroll)
+      [ -n "$window" ] || die "no window"
+      local button=5 width height
+      [ "${1:-down}" = up ] && button=4
+      eval "$(xdotool getwindowgeometry --shell "$window")"
+      width=$WIDTH height=$HEIGHT
+      xdotool mousemove --window "$window" $((width / 2)) $((height / 2))
+      xdotool click --repeat "${2:-4}" --delay 50 "$button"
+      sleep .5 ;;
     shot) [ -n "$window" ] || die "no window"; import -window "$window" "$evidence/$1.png"; say "$evidence/$1.png" ;;
     ocr) [ -n "$window" ] || die "no window"; ocr_text "$window" "$dir/ocr.png" ;;
     wait-text)

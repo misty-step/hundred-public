@@ -41,7 +41,7 @@ Keyboard is the stable handle. Coordinates depend on window size.
 | Sync now | `$V app key ctrl+r` |
 | History and back | `$V app key ctrl+h`, then `$V app key Escape` |
 | Quit and reopen | `$V app restart` (Ctrl+Q, wait for exit, relaunch on the same store) |
-| Narrow layout | `$V app resize 760 640` |
+| Narrow layout | `$V app resize 760 640`, then `$V app scroll down` to reach `Recent sets` |
 | Pointer | `$V app click X Y` (window coordinates; see `scripts/walk-native` for the known button positions) |
 
 Observe state through the app and through the store:

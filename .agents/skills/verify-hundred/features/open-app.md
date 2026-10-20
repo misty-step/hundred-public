@@ -25,7 +25,7 @@ Preconditions:
 - **Offline label.** Run `$V app wait-text 'sync not configured'`. Run `$V app status`. It shows `"totals": [0, 0, 0]` and `"pending": 0`.
 - **Capture.** Run `$V app shot empty`. The screenshot shows the title, `0 / 100` on all three rows, and no art in the pigment field.
 - **Reopen.** Log one set (`$V app key ctrl+3`, `$V app key ctrl+a`, `$V app type 20`, `$V app key Return`, then `$V app wait-status '.totals == [0,0,20]'`). Then run `$V app restart`. `$V app status` still shows `[0,0,20]`, and `$V app wait-text 'Squats'` matches. `$V app shot reopened` shows `20 / 100` on Squats.
-- **Narrow.** Run `$V app resize 760 640`, then `$V app shot narrow`. Every exercise row, the entry field, `Log set` and the sync label stay visible and unclipped.
+- **Narrow.** Run `$V app resize 760 640`, then `$V app shot narrow`. Every exercise row, the entry field, `Log set` and the sync label stay visible and unclipped. The rest of the page scrolls. Run `$V app scroll down`, and `$V app wait-text 'Recent sets'` matches with each row's `Undo` reachable.
 - **Scripted equivalent.** `$V walk native` captures `empty`, `reopened` and `narrow` with assertions in `native/`.
 - **Teardown.** Run `$V app stop`.
 
