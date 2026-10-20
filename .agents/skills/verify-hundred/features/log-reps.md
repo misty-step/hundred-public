@@ -35,7 +35,7 @@ Preconditions:
 
 ## Gotchas
 
-- Known bug: the `Enter between 1 and 1000 reps.` notice is replaced within 3 seconds by the previous notice, such as `Saved 20 squats · 80 left`, when the window's periodic refresh arrives. Capture it right after Return. Prove the refusal through the unchanged `status`, not the lingering text.
+- Known bug ([#5](https://github.com/misty-step/hundred-public/issues/5)): the `Enter between 1 and 1000 reps.` notice is replaced within 3 seconds by the previous notice, such as `Saved 20 squats · 80 left`, when the window's periodic refresh arrives. Capture it right after Return. Prove the refusal through the unchanged `status`, not the lingering text.
 - OCR often reads `1 and` as `1and`, and `15 / 100` as `15 /100`. Match short phrases, and use ` ?` around slashes.
 - Ctrl+A selects the entry before typing. Without it, typed digits append to the current value (default `20`).
 - `Saving here…` shows before the store replies. Wait for `Saved …` or the `status` totals.

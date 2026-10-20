@@ -39,7 +39,7 @@ Preconditions:
 ## Gotchas
 
 - The first requests to a fresh local Worker compile the Wasm and can take 15 seconds each. `worker start` waits for `/health`.
-- Known bug: a set saved while a sync is already in flight makes that sync end with `Server made no sync progress. Local sets are safe. · 1 waiting`. The set is safe and drains on the next sync, within 30 seconds. Wait on `.pending == 0` rather than on the first `Synced`.
+- Known bug ([#4](https://github.com/misty-step/hundred-public/issues/4)): a set saved while a sync is already in flight makes that sync end with `Server made no sync progress. Local sets are safe. · 1 waiting`. The set is safe and drains on the next sync, within 30 seconds. Wait on `.pending == 0` rather than on the first `Synced`.
 - `app status`, `app cli` and the CLI examples above use an empty `HUNDRED_TOKEN` or your explicit one. A token exported in your shell would otherwise make `sync` act as that identity.
 - Token files are synthetic and live under `~/.cache/tmp/verify-hundred/worker/`. `worker purge` removes them.
 - Slow-network behavior is not scripted. The client times out after 12 seconds and reports `Server unreachable`.
