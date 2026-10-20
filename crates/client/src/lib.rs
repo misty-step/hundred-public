@@ -294,11 +294,17 @@ pub fn sync(store: &mut Store, server: &str, token: &str) -> Result<()> {
             break;
         }
         ensure!(
-            !response.acknowledged.is_empty() || !response.records.is_empty(),
+            made_progress(&request, &response),
             "Server made no sync progress. Local sets are safe."
         );
     }
     Ok(())
+}
+
+/// A set saved after this round's request was built is still pending, but the
+/// round sent nothing, so an empty reply is not a stall: the next round sends it.
+fn made_progress(request: &SyncRequest, response: &SyncResponse) -> bool {
+    request.events.is_empty() || !response.acknowledged.is_empty() || !response.records.is_empty()
 }
 
 #[derive(serde::Deserialize)]
@@ -427,6 +433,28 @@ mod tests {
             assert_eq!(store.pending()?, 1);
             assert_eq!(store.events()?, vec![event.clone()]);
         }
+        Ok(())
+    }
+    #[test]
+    fn set_saved_during_a_round_is_sent_next_round_not_reported_as_a_stall() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut store = Store::open(directory.path())?;
+        // The round's request is built before the owner saves a set.
+        let request = store.request()?;
+        let event = store.add(Exercise::Squats, 5, None)?;
+        let empty = SyncResponse {
+            acknowledged: vec![],
+            records: vec![],
+            next: 0,
+            more: false,
+        };
+        store.apply(&request, &empty)?;
+        assert_eq!(store.pending()?, 1);
+        assert!(made_progress(&request, &empty));
+        // The next round carries the set; a server that then acknowledges nothing is a stall.
+        let next = store.request()?;
+        assert_eq!(next.events, vec![event]);
+        assert!(!made_progress(&next, &empty));
         Ok(())
     }
     #[test]
