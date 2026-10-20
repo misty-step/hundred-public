@@ -50,34 +50,58 @@ launch() {
 }
 shot() { import -window "$window" "$output/$1.png"; }
 status() { "$binary" --data-dir "$scratch/data" status; }
+# Poll the store instead of sleeping: under load a fixed sleep fails early, and
+# Enter is ignored while the previous save is still in flight.
+wait_status() {
+  for _ in $(seq 1 60); do
+    status | jq -e "$1" >/dev/null && return 0
+    sleep .25
+  done
+  echo "Store never satisfied $1: $(status | jq -c .)" >&2
+  return 1
+}
+# The store commits before the window hears back; Enter is ignored until the
+# window shows the save, so wait for its notice before the next action.
+wait_text() {
+  for _ in $(seq 1 30); do
+    import -window "$window" "$scratch/ocr.png"
+    magick=convert
+    command -v magick >/dev/null 2>&1 && magick=magick
+    "$magick" "$scratch/ocr.png" -resize 200% -colorspace Gray -negate "$scratch/ocr-big.png"
+    tesseract "$scratch/ocr-big.png" stdout 2>/dev/null | grep -Eq "$1" && return 0
+    sleep .5
+  done
+  echo "Window never showed /$1/" >&2
+  return 1
+}
 launch
 shot empty
 tesseract "$output/empty.png" stdout 2>/dev/null | grep -q Hundred
 xdotool key --window "$window" ctrl+3
 xdotool type --window "$window" '20'
 xdotool key --window "$window" Return
-sleep 2
-status | jq -e '.totals == [0,0,20] and .pending == 1' >/dev/null
+wait_status '.totals == [0,0,20] and .pending == 1'
+wait_text 'Saved 20 squats'
 shot partial-offline
 xdotool key --window "$window" ctrl+z
-sleep 1
-status | jq -e '.totals == [0,0,0]' >/dev/null
+wait_status '.totals == [0,0,0]'
 # Real pointer route: select Push-ups, choose 10, Log set, then Undo its row.
 xdotool mousemove --window "$window" 150 200 click 1
 xdotool mousemove --window "$window" 720 477 click 1
 xdotool mousemove --window "$window" 910 477 click 1
-sleep 1
-status | jq -e '.totals == [10,0,0]' >/dev/null
+wait_status '.totals == [10,0,0]'
+wait_text 'Saved 10 push-ups' # the new row is painted before its Undo is clicked
 xdotool mousemove --window "$window" 920 745 click 1
-sleep 1
-status | jq -e '.totals == [0,0,0]' >/dev/null
+wait_status '.totals == [0,0,0]'
+names=(push-ups crunches squats)
 for exercise in 1 2 3; do
   xdotool key --window "$window" "ctrl+$exercise" ctrl+a
   xdotool type --window "$window" '100'
   xdotool key --window "$window" Return
-  sleep 1
+  wait_status ".totals[$((exercise - 1))] == 100"
+  wait_text "Saved 100 ${names[exercise - 1]}"
 done
-status | jq -e '.totals == [100,100,100] and .current_streak == 1' >/dev/null
+wait_status '.totals == [100,100,100] and .current_streak == 1'
 shot complete
 xdotool key ctrl+q
 wait "$app_pid"

@@ -29,7 +29,7 @@ Preconditions:
 - **Undo.** Run `$V app key ctrl+z`. `$V app wait-text 'Set undone'` matches and `$V app wait-status '.totals == [0,0,0]'` passes. `$V app cli history | jq -c '[.events[].change.kind] | sort'` prints `["cancel","set"]`, because undo does not delete.
 - **Pointer save.** Click the Push-ups row, the `10` preset, then `Log set ↵`: `$V app click 150 200`, `$V app click 720 477`, `$V app click 910 477`. `$V app wait-status '.totals == [10,0,0]'` passes. A row's `Undo` button cancels it the same way (`scripts/walk-native` uses `920 745`).
 - **CLI save.** Run `$V app cli add crunches 15`. Stdout reads `Saved 15 crunches · <uuid>`. The open window picks it up within 3 seconds: `$V app wait-text '15 ?/ ?100'`.
-- **Complete day.** For each of `ctrl+1`, `ctrl+2` and `ctrl+3`, send the key, then `ctrl+a`, `$V app type 100`, `Return`. `$V app wait-status '.current_streak == 1'` passes, and `$V app wait-text '1 ?day streak'` matches. Each row reads `Done` or `N extra`. Run `$V app shot complete`. The screenshot shows `Today's hundred, done.` under the art. That caption is too small for reliable OCR.
+- **Complete day.** For each of `ctrl+1`, `ctrl+2` and `ctrl+3`, send the key, then `ctrl+a`, `$V app type 100`, `Return`, then wait for that exercise's notice (`$V app wait-text 'Saved 100 push-ups'`, then `crunches`, then `squats`) before the next one. `$V app wait-status '.current_streak == 1'` passes, and `$V app wait-text '1 ?day streak'` matches. Each row reads `Done` or `N extra`. Run `$V app shot complete`. The screenshot shows `Today's hundred, done.` under the art. That caption is too small for reliable OCR.
 - **History.** Run `$V app key ctrl+h`, then `$V app wait-text 'Your days'`, then `$V app shot history`. Today's row lists the exact totals. `$V app key Escape` returns to `Log`.
 - **Scripted equivalent.** `$V walk native` covers keyboard, pointer, undo, complete and history with assertions.
 
@@ -38,7 +38,7 @@ Preconditions:
 - Known bug ([#5](https://github.com/misty-step/hundred-public/issues/5)): the `Enter between 1 and 1000 reps.` notice is replaced within 3 seconds by the previous notice, such as `Saved 20 squats · 80 left`, when the window's periodic refresh arrives. Capture it right after Return. Prove the refusal through the unchanged `status`, not the lingering text.
 - OCR often reads `1 and` as `1and`, and `15 / 100` as `15 /100`. Match short phrases, and use ` ?` around slashes.
 - Ctrl+A selects the entry before typing. Without it, typed digits append to the current value (default `20`).
-- `Saving here…` shows before the store replies. Wait for `Saved …` or the `status` totals.
+- `Saving here…` shows before the store replies. Enter is ignored until the window shows the save, even when `status` already has it, so a quick second save is silently dropped. Wait for the exercise-specific `Saved N <exercise>` notice before the next save.
 - Pointer coordinates assume the default 980×850 window. After `app resize`, use the keyboard.
 - `status` reports today in the machine's local timezone. Backfilled sets (`add --at`) count on the day and offset they carry.
 - A CLI save made while the window is open syncs on the window's next sync, not immediately.

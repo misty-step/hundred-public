@@ -61,8 +61,6 @@ Scripted journeys:
 - `$V walk sync [DIR]` runs `scripts/test-worker` with `HUNDRED_WALK_SYNC=1`. It covers HTTP/D1 acceptance with two synthetic identities, including cross-owner refusal, lost responses and paging. It then runs `scripts/walk-sync`: outage, restart, automatic retry without pressing Sync, and second-desktop convergence.
 - `$V sign-in [DIR]` proves owner sign-in on production, read-only. See [features/sign-in.md](features/sign-in.md).
 
-`scripts/walk-native` waits a fixed second after some keys. Under heavy CPU load, such as a parallel `cargo build`, it can fail a `status` check while the app is fine. Rerun it alone before calling that a regression.
-
 The feature map in [features/README.md](features/README.md) is the recipe source. A proof is incomplete if it skips an entry point the map lists.
 
 ## Evidence

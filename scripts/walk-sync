@@ -61,7 +61,7 @@ proxy_pid=
 xdotool key --window "$window" ctrl+3
 xdotool type --window "$window" '20'
 xdotool key --window "$window" Return
-sleep 2
+for _ in $(seq 1 60); do status | jq -e '.totals == [0,0,20]' >/dev/null && break; sleep .25; done
 status | jq -e '.totals == [0,0,20] and .pending == 1' >/dev/null
 import -window "$window" "$output/offline-saved.png"
 xdotool key ctrl+q
