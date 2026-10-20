@@ -1,7 +1,15 @@
 # Export candidate only: this file is inert in the private repository.
 name: Check
 on:
+  pull_request:
+  schedule:
+    - cron: '17 3,15 * * *'
   workflow_dispatch:
+    inputs:
+      notification_drill:
+        description: Fail immediately to exercise CI failure delivery
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:

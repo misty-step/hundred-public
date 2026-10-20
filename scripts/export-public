@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Copy an exact committed allowlist into a new directory, without Git objects."""
+import argparse
+from pathlib import Path, PurePosixPath
+import subprocess
+
+
+def git(*args):
+    return subprocess.check_output(["git", "--no-replace-objects", *args])
+
+
+def safe_path(value):
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or any(p in (".", "..", ".git") for p in path.parts):
+        raise ValueError("Unsafe export path")
+    if str(path) != value:
+        raise ValueError("Noncanonical export path")
+    return value
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("revision", help="reviewed commit to export")
+    parser.add_argument("destination", type=Path, help="new directory outside the checkout")
+    args = parser.parse_args()
+    root = Path(git("rev-parse", "--show-toplevel").decode().strip()).resolve()
+    destination = args.destination.resolve()
+    if destination == root or root in destination.parents or destination.exists():
+        parser.error("Choose a new destination outside the checkout")
+    revision = git("rev-parse", "--verify", f"{args.revision}^{{commit}}").decode().strip()
+    tree_oid = git("rev-parse", "--verify", f"{revision}^{{tree}}").decode().strip()
+    tree = {}
+    for record in git("ls-tree", "-rz", "--full-tree", revision).split(b"\0"):
+        if record:
+            metadata, path = record.split(b"\t", 1)
+            mode, kind, oid = metadata.decode().split()
+            tree[path.decode()] = (mode, kind, oid)
+    manifest = git("show", f"{revision}:config/public-export.paths").decode()
+    covered, excluded, copies, targets = set(), set(), [], set()
+    for line in manifest.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if fields[0] == "exclude" and len(fields) == 2:
+            source = safe_path(fields[1])
+            excluded.add(source)
+        elif fields[0] == "copy" and len(fields) == 3:
+            source, target = map(safe_path, fields[1:])
+            if target in targets or source not in tree:
+                raise ValueError("Duplicate target or missing export source")
+            targets.add(target)
+            copies.append((source, target))
+        else:
+            raise ValueError("Invalid export manifest row")
+        if source in covered:
+            raise ValueError("Duplicate export source")
+        covered.add(source)
+    if set(tree) != covered - (excluded - set(tree)):
+        raise ValueError("Export manifest must classify every tracked path")
+    # Resolve and validate every object before creating any output.
+    output = []
+    for source, target in copies:
+        mode, kind, oid = tree[source]
+        if kind != "blob" or mode not in ("100644", "100755"):
+            raise ValueError("Only regular source files may be exported")
+        output.append((target, int(mode[-3:], 8), git("cat-file", "blob", oid)))
+    destination.mkdir(mode=0o700, parents=False)
+    for target, mode, data in output:
+        path = destination / target
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(mode)
+        if path.read_bytes() != data:
+            raise OSError("Export readback mismatch")
+    print(f"Exported {len(output)} files from commit {revision}, tree {tree_oid}; no Git objects or private deployment files copied.")
+
+
+if __name__ == "__main__":
+    main()

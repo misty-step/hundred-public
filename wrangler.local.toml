@@ -1,0 +1,21 @@
+# Synthetic local development only. Production configuration lives outside public source.
+name = "hundred-local"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-10-03"
+workers_dev = false
+
+[build]
+command = "scripts/build-worker"
+watch_dir = ["crates/core/src", "crates/worker/src"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hundred-local"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[observability]
+enabled = false
+
+[vars]
+RELEASE = "development"

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Drive the actual GPUI background sync across a real network outage and restart.
+# Run while scripts/test-worker's local Worker is alive; its second identity has no active sets.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+binary=$(realpath "${1:-target/debug/hundred}")
+output=$(realpath -m "${2:?Give an evidence directory}")
+mkdir -p "$output"
+mkdir -p "${TMPDIR:-$HOME/.cache/tmp}"
+scratch=$(mktemp -d "${TMPDIR:-$HOME/.cache/tmp}/hundred-sync.XXXXXX")
+export HUNDRED_TOKEN="${HUNDRED_QA_OTHER_TOKEN:?Use the synthetic second identity}"
+export HUNDRED_SERVER=http://127.0.0.1:8877
+export XDG_RUNTIME_DIR="$scratch/runtime" LIBGL_ALWAYS_SOFTWARE=1
+mkdir -m 700 "$XDG_RUNTIME_DIR"
+unset WAYLAND_DISPLAY
+app_pid= proxy_pid= xvfb_pid=
+cleanup() { for pid in "$app_pid" "$proxy_pid" "$xvfb_pid"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; }
+trap cleanup EXIT
+Xvfb -displayfd 3 -screen 0 1280x1024x24 -nolisten tcp 3>"$scratch/display" >"$output/display.log" 2>&1 &
+xvfb_pid=$!
+for _ in $(seq 1 100); do [ -s "$scratch/display" ] && break; sleep .1; done
+read -r display < "$scratch/display"
+export DISPLAY=":$display"
+proxy() { socat TCP-LISTEN:8877,bind=127.0.0.1,reuseaddr,fork TCP:127.0.0.1:8797 >"$output/proxy.log" 2>&1 & proxy_pid=$!; sleep .3; }
+launch() {
+  "$binary" --data-dir "$scratch/data" >"$output/app.log" 2>&1 & app_pid=$!
+  window=$(timeout 30 xdotool search --sync --onlyvisible --pid "$app_pid" --name '^Hundred$' | head -1)
+  xdotool windowfocus "$window"
+  for _ in $(seq 1 30); do
+    import -window "$window" "$output/readiness.png"
+    if tesseract "$output/readiness.png" stdout 2>/dev/null | grep -q Hundred; then break; fi
+    sleep 1
+  done
+}
+status() { "$binary" --data-dir "$scratch/data" status; }
+proxy
+launch
+for _ in $(seq 1 30); do
+  import -window "$window" "$output/connected.png"
+  if tesseract "$output/connected.png" stdout 2>/dev/null | grep -i Synced >/dev/null; then break; fi
+  sleep 1
+done
+tesseract "$output/connected.png" stdout 2>/dev/null | grep -i Synced >/dev/null
+status | jq -e '.totals == [0,0,0]' >/dev/null
+kill "$proxy_pid"
+wait "$proxy_pid" 2>/dev/null || true
+proxy_pid=
+xdotool key --window "$window" ctrl+3
+xdotool type --window "$window" '20'
+xdotool key --window "$window" Return
+sleep 2
+status | jq -e '.totals == [0,0,20] and .pending == 1' >/dev/null
+import -window "$window" "$output/offline-saved.png"
+xdotool key ctrl+q
+wait "$app_pid"
+app_pid=
+launch
+status | jq -e '.totals == [0,0,20] and .pending == 1' >/dev/null
+import -window "$window" "$output/offline-reopened.png"
+proxy
+# Do not press Sync: the automatic retry must drain the outbox.
+for _ in $(seq 1 50); do
+  if status | jq -e '.pending == 0' >/dev/null; then break; fi
+  sleep 1
+done
+status | jq -e '.totals == [0,0,20] and .pending == 0' >/dev/null
+sleep 1
+import -window "$window" "$output/automatically-synced.png"
+"$binary" --data-dir "$scratch/second-desktop" sync
+"$binary" --data-dir "$scratch/second-desktop" status | jq -e '.totals == [0,0,20] and .pending == 0' >/dev/null
+xdotool key --window "$window" ctrl+r
+sleep 2
+"$binary" --data-dir "$scratch/second-desktop" sync
+"$binary" --data-dir "$scratch/second-desktop" status | jq -e '.totals == [0,0,20]' >/dev/null
+xdotool key ctrl+q
+wait "$app_pid"
+app_pid=
+printf 'PASS actual GPUI offline save, process restart, automatic retry without Sync, second-desktop convergence and repeated sync without duplicates\n' | tee "$output/result.txt"

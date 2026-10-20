@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Real workerd + local D1, with new synthetic identities and no production credentials.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+mkdir -p "${TMPDIR:-$HOME/.cache/tmp}"
+scratch=$(mktemp -d "${TMPDIR:-$HOME/.cache/tmp}/hundred-worker.XXXXXX")
+export HUNDRED_QA_TOKEN=$(openssl rand -hex 32)
+export HUNDRED_QA_OTHER_TOKEN=$(openssl rand -hex 32)
+export HUNDRED_SERVER=http://127.0.0.1:8797
+hash_a=$(printf %s "$HUNDRED_QA_TOKEN" | sha256sum | cut -d' ' -f1)
+hash_b=$(printf %s "$HUNDRED_QA_OTHER_TOKEN" | sha256sum | cut -d' ' -f1)
+credentials=$(printf '[{"sha256":"%s","owner":"synthetic-a"},{"sha256":"%s","owner":"synthetic-b"}]' "$hash_a" "$hash_b")
+node_modules/.bin/wrangler d1 migrations apply DB --config wrangler.local.toml --local --persist-to "$scratch"
+setsid node_modules/.bin/wrangler dev --config wrangler.local.toml --local --port 8797 --persist-to "$scratch" --var "CREDENTIALS:$credentials" >"$scratch/worker.log" 2>&1 &
+pid=$!
+trap 'kill -- -"$pid" 2>/dev/null || true' EXIT
+for _ in $(seq 1 120); do
+  if curl --max-time 2 -fsS "$HUNDRED_SERVER/health" >/dev/null 2>&1; then break; fi
+  kill -0 "$pid"
+  sleep 1
+done
+scripts/acceptance
+if [ "${HUNDRED_WALK_SYNC:-0}" = 1 ]; then
+  cargo build --locked -p hundred
+  scripts/walk-sync target/debug/hundred "${WS_EVIDENCE:?}/native-sync"
+fi

@@ -1,0 +1,49 @@
+# Exact source/destination allowlist; tab-separated. No directory globs.
+exclude	.env.pass
+exclude	.github/workflows/check.yml
+copy	.gitignore	.gitignore
+copy	Cargo.lock	Cargo.lock
+copy	Cargo.toml	Cargo.toml
+copy	DESIGN.md	DESIGN.md
+copy	DOMAIN.md	DOMAIN.md
+copy	LICENSE	LICENSE
+copy	README.md	README.md
+copy	USER_STORIES.md	USER_STORIES.md
+copy	assets/hundred.svg	assets/hundred.svg
+copy	config/check.public.yml	.github/workflows/check.yml
+copy	config/launcher.env.example	config/launcher.env.example
+copy	config/pass.env.example	config/pass.env.example
+copy	config/public-export.paths	config/public-export.paths
+copy	crates/client/Cargo.toml	crates/client/Cargo.toml
+copy	crates/client/examples/acceptance.rs	crates/client/examples/acceptance.rs
+copy	crates/client/src/lib.rs	crates/client/src/lib.rs
+copy	crates/core/Cargo.toml	crates/core/Cargo.toml
+copy	crates/core/src/lib.rs	crates/core/src/lib.rs
+copy	crates/desktop/Cargo.toml	crates/desktop/Cargo.toml
+copy	crates/desktop/build.rs	crates/desktop/build.rs
+copy	crates/desktop/src/main.rs	crates/desktop/src/main.rs
+copy	crates/desktop/src/ui.rs	crates/desktop/src/ui.rs
+copy	crates/worker/Cargo.toml	crates/worker/Cargo.toml
+copy	crates/worker/src/lib.rs	crates/worker/src/lib.rs
+copy	docs/public-export.md	docs/public-export.md
+copy	docs/verification.md	docs/verification.md
+copy	migrations/0001_events.sql	migrations/0001_events.sql
+copy	package-lock.json	package-lock.json
+copy	package.json	package.json
+copy	rust-toolchain.toml	rust-toolchain.toml
+copy	scripts/acceptance	scripts/acceptance
+copy	scripts/build-worker	scripts/build-worker
+copy	scripts/check	scripts/check
+exclude	scripts/deploy
+copy	scripts/export-public	scripts/export-public
+copy	scripts/install	scripts/install
+copy	scripts/launcher	scripts/launcher
+copy	scripts/notify-ci-failure	scripts/notify-ci-failure
+copy	scripts/test-config	scripts/test-config
+exclude	scripts/test-deploy
+copy	scripts/test-public-tools	scripts/test-public-tools
+copy	scripts/test-worker	scripts/test-worker
+copy	scripts/walk-native	scripts/walk-native
+copy	scripts/walk-sync	scripts/walk-sync
+copy	wrangler.local.toml	wrangler.local.toml
+exclude	wrangler.toml

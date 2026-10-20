@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Update one CI failure issue. The workflow serializes calls per repository."""
+import json
+import os
+import subprocess
+
+
+def api(method, path, body=None):
+    args = ["gh", "api", "--method", method, path,
+            "-H", "Accept: application/vnd.github+json",
+            "-H", "X-GitHub-Api-Version: 2022-11-28"]
+    if body is not None:
+        args += ["--input", "-"]
+    return json.loads(subprocess.check_output(
+        args, input=json.dumps(body).encode() if body is not None else None,
+    ))
+
+
+def main():
+    repository = os.environ["GITHUB_REPOSITORY"]
+    root = f"repos/{repository}"
+    label = "ci-failure"
+    label_path = f"{root}/labels/{label}"
+    try:
+        api("GET", label_path)
+    except subprocess.CalledProcessError:
+        try:
+            api("POST", f"{root}/labels", {
+                "name": label, "color": "b60205", "description": "Hosted CI failures",
+            })
+        except subprocess.CalledProcessError:
+            # Another actor may have created the label. Other failures stay loud.
+            api("GET", label_path)
+    issues = []
+    page = 1
+    while True:
+        batch = api("GET", f"{root}/issues?state=open&labels={label}&per_page=100&page={page}")
+        issues.extend(issue for issue in batch if "pull_request" not in issue)
+        if len(batch) < 100:
+            break
+        page += 1
+    run_url = f"{os.environ['GITHUB_SERVER_URL']}/{repository}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+    body = (f"Hosted Check failed on `{os.environ['GITHUB_EVENT_NAME']}`.\n\n"
+            f"Run: {run_url}\n\nSHA: `{os.environ['GITHUB_SHA']}`\n")
+    fields = {"title": "CI failure", "body": body}
+    if issues:
+        number = min(issue["number"] for issue in issues)
+        api("PATCH", f"{root}/issues/{number}", fields)
+    else:
+        api("POST", f"{root}/issues", {**fields, "labels": [label]})
+
+
+if __name__ == "__main__":
+    main()

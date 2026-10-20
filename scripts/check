@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+scripts/test-config
+cargo fmt --all -- --check
+cargo test --locked -p hundred-core -p hundred-client
+cargo clippy --locked -p hundred --all-targets -- -D warnings
+cargo clippy --locked -p hundred-worker --target wasm32-unknown-unknown -- -D warnings
+npm audit --omit=dev --audit-level=high

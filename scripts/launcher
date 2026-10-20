@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+binary="$HOME/.local/lib/hundred/hundred"
+config=${HUNDRED_CONFIG-${XDG_CONFIG_HOME:-$HOME/.config}/hundred/launcher.env}
+if [ -e "$config" ]; then
+  [ -f "$config" ] && [ -r "$config" ] || { echo 'Cannot read Hundred launcher config.' >&2; exit 1; }
+  server_seen='' entry_seen=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      HUNDRED_SERVER=*)
+        [ -z "$server_seen" ] || { echo 'Duplicate Hundred launcher setting.' >&2; exit 1; }
+        server_seen=1
+        if [ "${HUNDRED_SERVER+x}" != x ]; then export HUNDRED_SERVER="${line#*=}"; fi ;;
+      HUNDRED_TOKEN_PASS_ENTRY=*)
+        [ -z "$entry_seen" ] || { echo 'Duplicate Hundred launcher setting.' >&2; exit 1; }
+        entry_seen=1
+        if [ "${HUNDRED_TOKEN_PASS_ENTRY+x}" != x ]; then export HUNDRED_TOKEN_PASS_ENTRY="${line#*=}"; fi ;;
+      *) echo 'Invalid Hundred launcher setting; use literal KEY=value lines.' >&2; exit 1 ;;
+    esac
+  done < "$config"
+elif [ "${HUNDRED_CONFIG+x}" = x ]; then
+  echo 'Explicit Hundred launcher config is missing.' >&2
+  exit 1
+fi
+# Even an empty environment token is deliberate: it disables pass lookup.
+if [ "${HUNDRED_TOKEN+x}" != x ] && [ -n "${HUNDRED_TOKEN_PASS_ENTRY:-}" ] && command -v pass-env >/dev/null 2>&1; then
+  # The sentinel preserves trailing newlines; neither value nor mapping reaches argv of the app.
+  # shellcheck disable=SC2016 # The credential expands only in the child.
+  if credential=$(pass-env run -e "HUNDRED_TOKEN=$HUNDRED_TOKEN_PASS_ENTRY" -- sh -c 'printf "%s." "$HUNDRED_TOKEN"' 2>/dev/null); then
+    export HUNDRED_TOKEN="${credential%.}"
+    unset credential
+  fi
+fi
+unset HUNDRED_TOKEN_PASS_ENTRY HUNDRED_CONFIG
+exec "$binary" "$@"

@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Exercise the launcher with an isolated HOME, fake pass-env, and fake app."""
+import json
+import sys
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+class LauncherTest(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory(prefix="hundred-config-")
+        self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name)
+        self.home = self.root / "home"
+        self.app = self.home / ".local/lib/hundred/hundred"
+        self.app.parent.mkdir(parents=True)
+        self.app.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+Path(os.environ["CONFIG_TEST_RESULT"]).write_text(json.dumps({
+    "args": sys.argv[1:], "server": os.environ.get("HUNDRED_SERVER"),
+    "token": os.environ.get("HUNDRED_TOKEN"),
+    "entry": os.environ.get("HUNDRED_TOKEN_PASS_ENTRY"),
+    "config": os.environ.get("HUNDRED_CONFIG"),
+}))
+''')
+        self.app.chmod(0o755)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        # A minimal PATH prevents accidentally invoking the workstation's pass-env.
+        for command in ("bash", "sh"):
+            (self.bin / command).symlink_to(shutil.which(command))
+        (self.bin / "python3").symlink_to(sys.executable)
+        self.env = {
+            "HOME": str(self.home), "PATH": str(self.bin),
+            "CONFIG_TEST_RESULT": str(self.root / "result.json"),
+            "CONFIG_TEST_CALLS": str(self.root / "calls.json"),
+        }
+
+    def config(self, content, path=None):
+        path = path or self.home / ".config/hundred/launcher.env"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        return path
+
+    def pass_env(self):
+        program = self.bin / "pass-env"
+        program.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+assert args[:2] == ["run", "-e"] and args[3] == "--"
+Path(os.environ["CONFIG_TEST_CALLS"]).write_text(json.dumps(args[:3]))
+if os.environ.get("CONFIG_TEST_LOCKED") == "1":
+    print("synthetic private failure", file=sys.stderr)
+    sys.exit(1)
+os.environ["HUNDRED_TOKEN"] = "synthetic-pass-token\\n\\n"
+os.execvp(args[4], args[4:])
+''')
+        program.chmod(0o755)
+
+    def run_launcher(self, expected=0, **env):
+        result = subprocess.run(
+            ["bash", str(Path(__file__).with_name("launcher")), "status", "--data-dir", "a b"],
+            env={**self.env, **env}, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, expected, result.stderr)
+        self.assertNotIn("synthetic-pass-token", result.stdout + result.stderr)
+        self.assertNotIn("synthetic private failure", result.stdout + result.stderr)
+        if expected:
+            self.assertFalse((self.root / "result.json").exists())
+            return
+        data = json.loads((self.root / "result.json").read_text())
+        self.assertEqual(data["args"], ["status", "--data-dir", "a b"])
+        self.assertIsNone(data["entry"])
+        self.assertIsNone(data["config"])
+        return data
+
+    def test_unconfigured_launches_offline_without_pass_lookup(self):
+        self.pass_env()
+        data = self.run_launcher()
+        self.assertIsNone(data["server"])
+        self.assertIsNone(data["token"])
+        self.assertFalse((self.root / "calls.json").exists())
+
+    def test_config_loads_server_and_only_selected_mapping(self):
+        self.config("HUNDRED_SERVER=https://sync.example.invalid\nHUNDRED_TOKEN_PASS_ENTRY=example/token\n")
+        self.pass_env()
+        data = self.run_launcher()
+        self.assertEqual(data["server"], "https://sync.example.invalid")
+        self.assertEqual(data["token"], "synthetic-pass-token\n\n")
+        self.assertEqual(json.loads((self.root / "calls.json").read_text()),
+                         ["run", "-e", "HUNDRED_TOKEN=example/token"])
+
+    def test_environment_wins_and_explicit_token_skips_pass(self):
+        self.config("HUNDRED_SERVER=https://config.example.invalid\nHUNDRED_TOKEN_PASS_ENTRY=example/config\n")
+        self.pass_env()
+        data = self.run_launcher(HUNDRED_SERVER="https://env.example.invalid", HUNDRED_TOKEN="synthetic-env")
+        self.assertEqual(data["server"], "https://env.example.invalid")
+        self.assertEqual(data["token"], "synthetic-env")
+        self.assertFalse((self.root / "calls.json").exists())
+
+    def test_empty_token_deliberately_disables_pass(self):
+        self.pass_env()
+        data = self.run_launcher(HUNDRED_TOKEN="", HUNDRED_TOKEN_PASS_ENTRY="example/token")
+        self.assertEqual(data["token"], "")
+        self.assertFalse((self.root / "calls.json").exists())
+
+    def test_environment_mapping_wins_over_config(self):
+        self.config("HUNDRED_TOKEN_PASS_ENTRY=example/config\n")
+        self.pass_env()
+        self.run_launcher(HUNDRED_TOKEN_PASS_ENTRY="example/env")
+        self.assertEqual(json.loads((self.root / "calls.json").read_text())[2], "HUNDRED_TOKEN=example/env")
+
+    def test_locked_pass_keeps_app_usable_offline(self):
+        self.pass_env()
+        data = self.run_launcher(HUNDRED_TOKEN_PASS_ENTRY="example/token", CONFIG_TEST_LOCKED="1")
+        self.assertIsNone(data["token"])
+
+    def test_missing_pass_program_keeps_app_usable_offline(self):
+        data = self.run_launcher(HUNDRED_TOKEN_PASS_ENTRY="example/token")
+        self.assertIsNone(data["token"])
+
+    def test_explicit_path_overrides_default_and_xdg(self):
+        self.config("HUNDRED_SERVER=https://default.example.invalid\n")
+        chosen = self.config("HUNDRED_SERVER=https://explicit.example.invalid", self.root / "private settings")
+        data = self.run_launcher(HUNDRED_CONFIG=str(chosen), XDG_CONFIG_HOME=str(self.root / "xdg"))
+        self.assertEqual(data["server"], "https://explicit.example.invalid")
+
+    def test_xdg_config_home(self):
+        self.config("HUNDRED_SERVER=https://xdg.example.invalid\n", self.root / "xdg/hundred/launcher.env")
+        self.assertEqual(self.run_launcher(XDG_CONFIG_HOME=str(self.root / "xdg"))["server"],
+                         "https://xdg.example.invalid")
+
+    def test_explicit_missing_file_fails_before_app(self):
+        self.run_launcher(1, HUNDRED_CONFIG=str(self.root / "missing"))
+
+    def test_explicit_empty_path_fails_before_app(self):
+        self.run_launcher(1, HUNDRED_CONFIG="")
+
+    def test_shell_text_is_literal_and_never_executed(self):
+        marker = self.root / "must-not-exist"
+        value = f"$(touch {marker})"
+        self.config(f"HUNDRED_SERVER={value}\n")
+        self.assertEqual(self.run_launcher()["server"], value)
+        self.assertFalse(marker.exists())
+
+    def test_unknown_or_duplicate_keys_fail_without_printing_values(self):
+        for text in ("HUNDRED_TOKEN=synthetic-private\n", "HUNDRED_SERVER=a\nHUNDRED_SERVER=b\n"):
+            with self.subTest(text=text):
+                self.config(text)
+                self.run_launcher(1)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

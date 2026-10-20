@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Test export/install provenance and CI notification with disposable command doubles."""
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+SOURCE = Path(__file__).resolve().parent.parent
+
+
+class PublicToolsTest(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory(prefix="hundred-public-tools-")
+        self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.env = {
+            "HOME": str(self.home), "PATH": os.defpath,
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        }
+
+    def git(self, repo, *args):
+        return subprocess.check_output(["git", "-C", str(repo), *args], env=self.env, stderr=subprocess.PIPE).decode().strip()
+
+    def init(self, repo):
+        self.git(repo, "init", "--template=", "--initial-branch=main")
+        self.git(repo, "add", ".")
+        self.git(repo, "-c", "commit.gpgsign=false", "commit", "-m", "Add fixture")
+        return self.git(repo, "rev-parse", "HEAD")
+
+    def test_export_ignores_commit_and_blob_replacements(self):
+        repo = self.root / "source"
+        (repo / "config").mkdir(parents=True)
+        (repo / "LICENSE").write_text("Reviewed committed bytes\n")
+        (repo / "config/public-export.paths").write_text(
+            "copy\tLICENSE\tLICENSE\ncopy\tconfig/public-export.paths\tconfig/public-export.paths\n"
+        )
+        revision = self.init(repo)
+        tree = self.git(repo, "rev-parse", "HEAD^{tree}")
+        original_blob = self.git(repo, "rev-parse", "HEAD:LICENSE")
+        (repo / "LICENSE").write_text("Replacement bytes\n")
+        self.git(repo, "add", "LICENSE")
+        self.git(repo, "-c", "commit.gpgsign=false", "commit", "-m", "Add replacement")
+        replacement = self.git(repo, "rev-parse", "HEAD")
+        replacement_blob = self.git(repo, "rev-parse", "HEAD:LICENSE")
+        (repo / "LICENSE").write_text("Dirty worktree bytes\n")
+        (repo / "untracked").write_text("Untracked bytes\n")
+        for kind, old, new in [("commit", revision, replacement), ("blob", original_blob, replacement_blob)]:
+            with self.subTest(kind=kind):
+                self.git(repo, "replace", old, new)
+                destination = self.root / ("export-" + kind)
+                result = subprocess.run([str(SOURCE / "scripts/export-public"), revision, str(destination)], cwd=repo, env=self.env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((destination / "LICENSE").read_text(), "Reviewed committed bytes\n")
+                self.assertFalse((destination / "untracked").exists())
+                self.assertIn("commit " + revision, result.stdout)
+                self.assertIn("tree " + tree, result.stdout)
+                self.git(repo, "replace", "-d", old)
+
+    def test_dispatch_drill_fails_only_for_true_input(self):
+        workflow = SOURCE / "config/check.public.yml"
+        if not workflow.exists():
+            workflow = SOURCE / ".github/workflows/check.yml"
+        step = workflow.read_text().split("      - name: Exercise failure notification\n", 1)[1].split("      - uses:", 1)[0]
+        self.assertIn("if: github.event_name == 'workflow_dispatch'", step)
+        script = "\n".join(line.removeprefix("          ") for line in step.split("        run: |\n", 1)[1].splitlines())
+        event_file = self.root / "event.json"
+        for inputs, fails in [({}, False), ({"notification_drill": "false"}, False), ({"notification_drill": "true"}, True)]:
+            with self.subTest(inputs=inputs):
+                event_file.write_text(json.dumps({"inputs": inputs}))
+                result = subprocess.run(["bash", "-e", "-c", script], env={**self.env, "GITHUB_EVENT_PATH": str(event_file)}, capture_output=True, text=True)
+                self.assertEqual(result.returncode != 0, fails)
+                if fails:
+                    self.assertIn("Deliberate failure notification drill", result.stderr)
+
+    def install_fixture(self):
+        repo = self.root / "archive"
+        (repo / "scripts").mkdir(parents=True)
+        (repo / "assets").mkdir()
+        for name in ("scripts/install", "scripts/launcher", "assets/hundred.svg"):
+            shutil.copyfile(SOURCE / name, repo / name)
+        binary = repo / "binary"
+        binary.write_text('#!/bin/sh\nprintf "%s\\n" "$FIXTURE_VERSION"\n')
+        binary.chmod(0o755)
+        return repo, binary
+
+    def run_install(self, repo, binary, version, expected=None, **extra):
+        env = {**self.env, "FIXTURE_VERSION": version, **extra}
+        if expected is not None:
+            env["HUNDRED_BUILD_SHA"] = expected
+        return subprocess.run(["bash", str(repo / "scripts/install"), str(binary)], env=env, capture_output=True, text=True)
+
+    def test_archive_requires_nonempty_revision_and_installs_nothing(self):
+        repo, binary = self.install_fixture()
+        for expected in (None, ""):
+            with self.subTest(expected=expected):
+                result = self.run_install(repo, binary, "hundred 0.1.0 (source-archive)", expected)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("No Git revision", result.stderr)
+                self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_archive_rejects_mismatch_substring_and_malformed_version(self):
+        repo, binary = self.install_fixture()
+        revision = "a" * 40
+        for version in ["hundred 0.1.0 (" + "b" * 40 + ")", "hundred 0.1.0 (" + revision + "extra)", "other " + revision, "hundred 0.1.0 (" + revision + ")\nextra"]:
+            with self.subTest(version=version):
+                result = self.run_install(repo, binary, version, revision)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_archive_exact_revision_preserves_owned_install_paths(self):
+        repo, binary = self.install_fixture()
+        revision = "a" * 40
+        result = self.run_install(repo, binary, "hundred 0.1.0 (" + revision + ")", revision)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = {
+            ".local/lib/hundred/hundred", ".local/bin/hundred",
+            ".local/share/applications/io.mistystep.hundred.desktop",
+            ".local/share/icons/hicolor/scalable/apps/hundred.svg",
+        }
+        self.assertEqual({p.relative_to(self.home).as_posix() for p in self.home.rglob("*") if p.is_file()}, expected)
+        self.assertEqual((self.home / ".local/lib/hundred/hundred").read_bytes(), binary.read_bytes())
+        self.assertEqual((self.home / ".local/bin/hundred").read_bytes(), (repo / "scripts/launcher").read_bytes())
+
+    def test_archive_with_no_git_command_requires_matching_override(self):
+        repo, binary = self.install_fixture()
+        commands = self.root / "commands"
+        commands.mkdir()
+        for name in ("bash", "dirname", "install", "mv"):
+            (commands / name).symlink_to(shutil.which(name))
+        version = "hundred 0.1.0 (archive-build)"
+        result = self.run_install(repo, binary, version, PATH=str(commands))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(self.home.iterdir()), [])
+        result = self.run_install(repo, binary, version, "archive-build", PATH=str(commands))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_git_revision_cannot_be_bypassed_by_archive_override(self):
+        repo, binary = self.install_fixture()
+        revision = self.init(repo)
+        override = "b" * 40
+        result = self.run_install(repo, binary, "hundred 0.1.0 (" + override + ")", override)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(self.home.iterdir()), [])
+        result = self.run_install(repo, binary, "hundred 0.1.0 (" + revision + ")")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def notifier(self, state):
+        commands = self.root / "commands"
+        commands.mkdir()
+        gh = commands / "gh"
+        gh.write_text('''#!/usr/bin/python3
+import json, os, sys
+from pathlib import Path
+p = Path(os.environ["NOTIFY_TEST_STATE"])
+s = json.loads(p.read_text())
+args = sys.argv[1:]
+assert args[:2] == ["api", "--method"]
+method, path = args[2:4]
+assert path.startswith("repos/example/source/")
+body = json.load(sys.stdin) if "--input" in args else None
+s.setdefault("calls", []).append([method, path, body])
+result, code = {}, 0
+if s.get("deny"):
+    code = 1
+elif path.endswith("/labels/ci-failure"):
+    code = 0 if s.get("label") else 1
+elif path.endswith("/labels") and method == "POST":
+    assert body["name"] == "ci-failure"
+    s["label"] = True
+    if s.get("label_race"): code = 1
+elif "/issues?" in path:
+    page = int(path.rsplit("=", 1)[1])
+    result = s.get("issues", [])[(page - 1) * 100:page * 100]
+elif path.endswith("/issues") and method == "POST":
+    assert body["labels"] == ["ci-failure"] and s["label"]
+    result = dict(body, number=1)
+    s.setdefault("issues", []).append(result)
+elif "/issues/" in path and method == "PATCH":
+    number = int(path.rsplit("/", 1)[1])
+    issue = next(x for x in s["issues"] if x["number"] == number)
+    issue.update(body)
+    result = issue
+else:
+    raise AssertionError([method, path, body])
+p.write_text(json.dumps(s))
+print(json.dumps(result))
+sys.exit(code)
+''')
+        gh.chmod(0o755)
+        state_path = self.root / "notification.json"
+        state_path.write_text(json.dumps(state))
+        env = {
+            **self.env, "PATH": str(commands) + ":" + os.defpath,
+            "NOTIFY_TEST_STATE": str(state_path), "GITHUB_REPOSITORY": "example/source",
+            "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "123",
+            "GITHUB_SHA": "a" * 40, "GITHUB_EVENT_NAME": "workflow_dispatch",
+        }
+        return state_path, env
+
+    def run_notify(self, env):
+        return subprocess.run([str(SOURCE / "scripts/notify-ci-failure")], env=env, capture_output=True, text=True)
+
+    def test_notification_creates_label_and_reuses_one_issue(self):
+        state_path, env = self.notifier({})
+        first = self.run_notify(env)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        state = json.loads(state_path.read_text())
+        self.assertEqual(len(state["issues"]), 1)
+        self.assertIn("https://github.com/example/source/actions/runs/123", state["issues"][0]["body"])
+        self.assertIn("a" * 40, state["issues"][0]["body"])
+        env.update(GITHUB_RUN_ID="456", GITHUB_SHA="b" * 40, GITHUB_EVENT_NAME="schedule")
+        second = self.run_notify(env)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        state = json.loads(state_path.read_text())
+        self.assertEqual(len(state["issues"]), 1)
+        self.assertEqual(sum(method == "POST" and path.endswith("/issues") for method, path, body in state["calls"]), 1)
+        self.assertIn("actions/runs/456", state["issues"][0]["body"])
+        self.assertIn("b" * 40, state["issues"][0]["body"])
+
+    def test_notification_tolerates_label_creation_race(self):
+        state_path, env = self.notifier({"label_race": True})
+        result = self.run_notify(env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(json.loads(state_path.read_text())["issues"]), 1)
+
+    def test_notification_finds_existing_issue_after_labelled_pull_requests(self):
+        pulls = [dict(number=n, pull_request={}) for n in range(1, 101)]
+        state_path, env = self.notifier({"label": True, "issues": [*pulls, dict(number=200)]})
+        result = self.run_notify(env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads(state_path.read_text())
+        self.assertEqual(len(state["issues"]), 101)
+        self.assertIn("actions/runs/123", state["issues"][-1]["body"])
+        self.assertFalse(any(method == "POST" for method, path, body in state["calls"]))
+
+    def test_notification_api_denial_fails_loudly(self):
+        state_path, env = self.notifier({"deny": True})
+        result = self.run_notify(env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(json.loads(state_path.read_text()).get("issues"))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

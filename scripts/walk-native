@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+binary=$(realpath "${1:-target/debug/hundred}")
+output=$(realpath -m "${2:?Give a private evidence directory}")
+mkdir -p "$output"
+chmod 700 "$output"
+mkdir -p "${TMPDIR:-$HOME/.cache/tmp}"
+scratch=$(mktemp -d "${TMPDIR:-$HOME/.cache/tmp}/hundred-native.XXXXXX")
+app_pid= xvfb_pid=
+cleanup() {
+  [ -z "$app_pid" ] || kill "$app_pid" 2>/dev/null || true
+  [ -z "$xvfb_pid" ] || kill "$xvfb_pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+export HUNDRED_TOKEN='' XDG_RUNTIME_DIR="$scratch/runtime" LIBGL_ALWAYS_SOFTWARE=1
+mkdir -m 700 "$XDG_RUNTIME_DIR"
+unset WAYLAND_DISPLAY
+Xvfb -displayfd 3 -screen 0 1280x1024x24 -nolisten tcp 3>"$scratch/display" >"$output/display.log" 2>&1 &
+xvfb_pid=$!
+for _ in $(seq 1 100); do [ -s "$scratch/display" ] && break; sleep .1; done
+read -r display < "$scratch/display"
+export DISPLAY=":$display"
+launch() {
+  "$binary" --data-dir "$scratch/data" >"$output/app.log" 2>&1 &
+  app_pid=$!
+  window=$(timeout 30 xdotool search --sync --onlyvisible --pid "$app_pid" --name '^Hundred$' | head -1)
+  xdotool windowfocus "$window"
+  # Software Vulkan compiles shaders on first use; wait for actual visible readiness.
+  for _ in $(seq 1 30); do
+    import -window "$window" "$output/readiness.png"
+    if tesseract "$output/readiness.png" stdout 2>/dev/null | grep -q Hundred; then break; fi
+    sleep 1
+  done
+  tesseract "$output/readiness.png" stdout 2>/dev/null | grep -q Hundred
+  sleep 1
+}
+shot() { import -window "$window" "$output/$1.png"; }
+status() { "$binary" --data-dir "$scratch/data" status; }
+launch
+shot empty
+tesseract "$output/empty.png" stdout 2>/dev/null | grep -q Hundred
+xdotool key --window "$window" ctrl+3
+xdotool type --window "$window" '20'
+xdotool key --window "$window" Return
+sleep 2
+status | jq -e '.totals == [0,0,20] and .pending == 1' >/dev/null
+shot partial-offline
+xdotool key --window "$window" ctrl+z
+sleep 1
+status | jq -e '.totals == [0,0,0]' >/dev/null
+# Real pointer route: select Push-ups, choose 10, Log set, then Undo its row.
+xdotool mousemove --window "$window" 150 200 click 1
+xdotool mousemove --window "$window" 720 477 click 1
+xdotool mousemove --window "$window" 910 477 click 1
+sleep 1
+status | jq -e '.totals == [10,0,0]' >/dev/null
+xdotool mousemove --window "$window" 920 745 click 1
+sleep 1
+status | jq -e '.totals == [0,0,0]' >/dev/null
+for exercise in 1 2 3; do
+  xdotool key --window "$window" "ctrl+$exercise" ctrl+a
+  xdotool type --window "$window" '100'
+  xdotool key --window "$window" Return
+  sleep 1
+done
+status | jq -e '.totals == [100,100,100] and .current_streak == 1' >/dev/null
+shot complete
+xdotool key ctrl+q
+wait "$app_pid"
+app_pid=
+launch
+status | jq -e '.totals == [100,100,100]' >/dev/null
+shot reopened
+tesseract "$output/reopened.png" stdout 2>/dev/null | grep -E '100[[:space:]]*/[[:space:]]*100' >/dev/null
+xdotool key --window "$window" ctrl+h
+sleep .5
+shot history
+xdotool key --window "$window" Escape
+xdotool windowsize "$window" 760 640
+sleep .5
+shot narrow
+xdotool key ctrl+q
+wait "$app_pid"
+app_pid=
+"$binary" --data-dir "$scratch/data" export "$scratch/archive.json"
+"$binary" --data-dir "$scratch/restored" restore "$scratch/archive.json"
+"$binary" --data-dir "$scratch/restored" export "$scratch/roundtrip.json"
+cmp "$scratch/archive.json" "$scratch/roundtrip.json"
+printf 'PASS real GPUI keyboard and pointer logging, undo, completion, quit/reopen, history, 760x640 layout, archive round trip\n' | tee "$output/result.txt"
+# Only disposable synthetic history; retain outside Git with the evidence.
+printf '%s\n' "$scratch" > "$output/synthetic-data-path.txt"

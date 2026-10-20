@@ -1,0 +1,25 @@
+[workspace]
+members = ["crates/core", "crates/client", "crates/desktop", "crates/worker"]
+default-members = ["crates/core", "crates/client", "crates/desktop"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["serde"] }
+hundred-core = { path = "crates/core" }
+hundred-client = { path = "crates/client" }
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+# Preserve Wasm target_features for wasm-bindgen's externref transform.
+strip = "debuginfo"

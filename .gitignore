@@ -1,0 +1,12 @@
+/target/
+/node_modules/
+**/build/
+/.wrangler/
+/.dev.vars
+/.env
+/.evidence/
+*.sqlite*
+*.db
+/.env.pass
+/wrangler.toml
+/launcher.env

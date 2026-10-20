@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+unset CLOUDFLARE_API_TOKEN
+cd "$(dirname "$0")/../crates/worker"
+# Deploy only the output already exercised by test-worker; never compile during promotion.
+if [ "${WRANGLER_COMMAND:-}" = deploy ]; then
+  test -s ../../build/worker/shim.mjs
+  exit
+fi
+worker-build --release
+mkdir -p ../../build
+cp -a build/. ../../build/

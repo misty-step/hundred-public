@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+: "${HUNDRED_SERVER:?Set an explicit Worker origin}"
+: "${HUNDRED_QA_TOKEN:?Use a new synthetic identity, never the production token}"
+: "${HUNDRED_QA_OTHER_TOKEN:?Use a second synthetic identity}"
+exec cargo run --locked -p hundred-client --example acceptance
