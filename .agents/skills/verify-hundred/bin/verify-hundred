@@ -454,7 +454,7 @@ doctor() {
   if [ -x "$HOME/.local/lib/hundred/hundred" ]; then
     local installed
     installed=$("$HOME/.local/lib/hundred/hundred" --version 2>/dev/null || echo unreadable)
-    [ "$prod" = 0 ] || [ "$redact" = 0 ] || installed=${installed%% (*}" ($(shown_rev x))"
+    [ "$redact" = 0 ] || installed=${installed%% (*}" ($(shown_rev x))"
     say "info  installed app: $installed"
   fi
   if [ "$prod" = 1 ]; then
