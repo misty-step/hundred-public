@@ -93,8 +93,12 @@ fn controller(
         let mut notice_changed = true;
         let mut syncing = false;
         let mut last_sync = Instant::now() - Duration::from_secs(30);
+        // The first pass answers at once, so the starting notice cannot arrive
+        // after (and replace) a notice the window set in its first seconds.
+        let mut wait = Duration::ZERO;
         loop {
-            let command = incoming.recv_timeout(Duration::from_secs(3));
+            let command = incoming.recv_timeout(wait);
+            wait = Duration::from_secs(3);
             let mut saved = false;
             let mut should_sync = last_sync.elapsed() >= Duration::from_secs(30);
             match command {
