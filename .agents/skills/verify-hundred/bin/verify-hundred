@@ -5,6 +5,8 @@
 # on the deployed Worker. Usage: verify-hundred help
 set -euo pipefail
 
+# Set only inside sign-in, for its wrong-credential probe of the deployed server.
+unset _verify_hundred_probe
 repo=$(cd "$(dirname "$(realpath "$0")")/../../../.." && pwd)
 home=${VERIFY_HUNDRED_HOME:-$HOME/.cache/tmp/verify-hundred}
 bin=${HUNDRED_BIN:-$repo/target/debug/hundred}
@@ -28,7 +30,7 @@ verify-hundred <command>
   doctor [--prod]            Read-only readiness check (tools, binary revision, live sessions;
                              --prod adds health, sign-out refusal and owner identity).
   build                      cargo build --locked -p hundred (debug binary the drives use).
-  app start [--prod | --server URL --token-file FILE] [--data-dir DIR] [--evidence DIR]
+  app start [--prod | [--server LOOPBACK-URL --token-file FILE] [--data-dir DIR]] [--evidence DIR]
                              Launch the real app on a private Xvfb display. Default: offline.
   app key KEYS...            xdotool key names, e.g. ctrl+3 Return ctrl+z ctrl+h Escape.
   app type TEXT              Type literal text into the focused field.
@@ -235,11 +237,11 @@ launch_app() { # dir
 }
 
 app_start() {
-  local mode=offline data='' evidence='' server_arg='' token_file=''
+  local mode=offline prod=0 data='' evidence='' server_arg='' token_file=''
   while [ $# -gt 0 ]; do
     case "$1" in
-      --prod) mode=prod ;;
-      --server) mode=local; server_arg=$2; shift ;;
+      --prod) prod=1 ;;
+      --server) server_arg=$2; shift ;;
       --token-file) token_file=$2; shift ;;
       --data-dir) data=$2; shift ;;
       --evidence) evidence=$2; shift ;;
@@ -247,6 +249,22 @@ app_start() {
     esac
     shift
   done
+  # Production is never written: an owner session starts from an empty store
+  # (the app pushes every pending record on launch), and a token file may only
+  # reach a loopback Worker.
+  if [ "$prod" = 1 ]; then
+    [ -z "$server_arg$token_file" ] || die "--prod takes neither --server nor --token-file"
+    [ -z "$data" ] || die "--prod always starts from an empty store; --data-dir would upload its pending records to the owner's production history"
+    mode=prod
+  elif [ -n "$server_arg" ]; then
+    mode=local
+    case "$server_arg" in
+      http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*) ;;
+      *)
+        [ "${_verify_hundred_probe:-}" = 1 ] || die "--server must be a loopback local Worker; reach production only through --prod or sign-in"
+        [ -z "$data" ] || die "a remote probe always starts from an empty store" ;;
+    esac
+  fi
   need_tools Xvfb xdotool import tesseract
   [ -x "$bin" ] || die "no binary at $bin; run: verify-hundred build"
   if [ "$mode" = local ]; then
@@ -563,7 +581,7 @@ sign_in() {
   # Wrong identity in the real app: a random credential must not read as Synced.
   sign_in_bad=$(mktemp "$home/bad-token.XXXXXX")
   openssl rand -hex 32 > "$sign_in_bad"
-  out=$(app_start --server "$server" --token-file "$sign_in_bad" --evidence "$evidence")
+  out=$(_verify_hundred_probe=1 app_start --server "$server" --token-file "$sign_in_bad" --evidence "$evidence")
   VERIFY_HUNDRED_SESSION=$(sed -n 's/^session //p' <<<"$out")
   export VERIFY_HUNDRED_SESSION
   sign_in_sessions+=("$VERIFY_HUNDRED_SESSION")
