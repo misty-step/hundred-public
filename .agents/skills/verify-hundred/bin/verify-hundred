@@ -510,7 +510,7 @@ sign_in() {
   sign_in_sessions=() sign_in_bad=''
   trap 'for s in "${sign_in_sessions[@]}"; do stop_session "$home/sessions/$s" || true; done; [ -z "$sign_in_bad" ] || rm -f "$sign_in_bad"' EXIT
   note "# Hundred owner sign-in, $(date -u +%FT%TZ)"
-  note "server: $(shown_server); expected owner: $(shown_owner); credential: pass entry from private config"
+  note "server: $(shown_server); expected owner: $(shown_owner); credential: pass entry $([ "$redact" = 1 ] && echo 'from private config' || echo "$pass_entry")"
   note "client: $("$bin" --version)"
   local health code body
   health=$(curl -s -m 15 "$server/health") || die "GET /health failed (curl exit $?)"
