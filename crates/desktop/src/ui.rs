@@ -48,7 +48,9 @@ enum Command {
 struct Update {
     events: Vec<Event>,
     pending: usize,
-    notice: String,
+    /// Only a command's result; a periodic refresh must not replace the
+    /// window's newer local notice (such as a refused rep count).
+    notice: Option<String>,
     sync_label: String,
     saved: bool,
 }
@@ -68,7 +70,7 @@ fn controller(
                 let _ = updates.send(Update {
                     events: vec![],
                     pending: 0,
-                    notice: format!("Cannot open local history: {error}"),
+                    notice: Some(format!("Cannot open local history: {error}")),
                     sync_label: "Storage unavailable".into(),
                     saved: false,
                 });
@@ -88,38 +90,47 @@ fn controller(
             "Your first set starts here."
         }
         .to_owned();
+        let mut notice_changed = true;
         let mut syncing = false;
         let mut last_sync = Instant::now() - Duration::from_secs(30);
+        // The first pass answers at once, so the starting notice cannot arrive
+        // after (and replace) a notice the window set in its first seconds.
+        let mut wait = Duration::ZERO;
         loop {
-            let command = incoming.recv_timeout(Duration::from_secs(3));
+            let command = incoming.recv_timeout(wait);
+            wait = Duration::from_secs(3);
             let mut saved = false;
             let mut should_sync = last_sync.elapsed() >= Duration::from_secs(30);
             match command {
-                Ok(Command::Add(exercise, reps)) => match store.add(exercise, reps, None) {
-                    Ok(event) => {
-                        let totals = store.events().map(|events| {
-                            progress(&events, event.day())
-                                .days
-                                .get(&event.day())
-                                .copied()
-                                .unwrap_or_default()
-                        });
-                        notice = totals.map_or_else(
-                            |_| "Saved here.".into(),
-                            |totals| {
-                                format!(
-                                    "Saved {reps} {} · {} left",
-                                    exercise.label().to_lowercase(),
-                                    remaining(totals[exercise.index()])
-                                )
-                            },
-                        );
-                        saved = true;
-                        should_sync = true;
+                Ok(Command::Add(exercise, reps)) => {
+                    notice_changed = true;
+                    match store.add(exercise, reps, None) {
+                        Ok(event) => {
+                            let totals = store.events().map(|events| {
+                                progress(&events, event.day())
+                                    .days
+                                    .get(&event.day())
+                                    .copied()
+                                    .unwrap_or_default()
+                            });
+                            notice = totals.map_or_else(
+                                |_| "Saved here.".into(),
+                                |totals| {
+                                    format!(
+                                        "Saved {reps} {} · {} left",
+                                        exercise.label().to_lowercase(),
+                                        remaining(totals[exercise.index()])
+                                    )
+                                },
+                            );
+                            saved = true;
+                            should_sync = true;
+                        }
+                        Err(error) => notice = format!("Not saved: {error}"),
                     }
-                    Err(error) => notice = format!("Not saved: {error}"),
-                },
+                }
                 Ok(Command::Undo(id)) => {
+                    notice_changed = true;
                     notice = match store.undo(id.as_deref()) {
                         Ok(_) => "Set undone. Saved here.".into(),
                         Err(error) => error.to_string(),
@@ -156,6 +167,7 @@ fn controller(
                 Ok(events) => events,
                 Err(error) => {
                     notice = format!("Cannot read local history: {error}");
+                    notice_changed = true;
                     vec![]
                 }
             };
@@ -169,7 +181,7 @@ fn controller(
                 .send(Update {
                     events,
                     pending,
-                    notice: notice.clone(),
+                    notice: notice_changed.then(|| notice.clone()),
                     sync_label: label,
                     saved,
                 })
@@ -177,6 +189,7 @@ fn controller(
             {
                 break;
             }
+            notice_changed = false;
         }
     });
     (commands, outgoing)
@@ -212,7 +225,9 @@ impl Hundred {
                         while let Ok(update) = this.receiver.try_recv() {
                             this.events = update.events;
                             this.pending = update.pending;
-                            this.notice = update.notice;
+                            if let Some(notice) = update.notice {
+                                this.notice = notice;
+                            }
                             this.sync_label = update.sync_label;
                             if update.saved {
                                 this.replace_number = true;
