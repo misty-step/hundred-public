@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, hetzner-ci, hundred-public-ci]
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 2
@@ -63,7 +63,7 @@ jobs:
   notify:
     needs: check
     if: failure() && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, hetzner-ci, hundred-public-ci]
     timeout-minutes: 5
     permissions:
       contents: read
@@ -75,6 +75,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Install GitHub CLI
+        run: sudo apt-get update && sudo apt-get install -y gh
       - run: scripts/notify-ci-failure
         env:
           GH_TOKEN: ${{ github.token }}
