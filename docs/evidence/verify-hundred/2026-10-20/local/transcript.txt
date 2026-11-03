@@ -1,0 +1,131 @@
+$ .agents/skills/verify-hundred/bin/verify-hundred doctor
+ok    tools present
+ok    wrangler installed (npm ci --ignore-scripts)
+ok    binary ~/.t3/worktrees/hundred-public/verify-verification-skill/target/debug/hundred is built from HEAD bd98f3d07f63 (got: hundred 0.1.0 (bd98f3d07f632b44b6a83f43acdbfc51a6b2eb54))
+info  live sessions: none
+info  installed app: hundred 0.1.0 (<private revision>)
+$ .agents/skills/verify-hundred/bin/verify-hundred app start --evidence ~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log
+session 20261020T224041Z-1507918
+mode offline
+display :103
+data ~/.cache/tmp/verify-hundred/sessions/20261020T224041Z-1507918/data
+evidence ~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Your first set starts here
+matched: Your first set starts here
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text sync not configured
+matched: sync not configured
+$ sh -c .agents/skills/verify-hundred/bin/verify-hundred app status | jq -c '[.totals, .pending]'
+[[0,0,0],0]
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot empty
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/empty.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+3
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+a
+$ .agents/skills/verify-hundred/bin/verify-hundred app type 20
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Return
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Saved 20 squats
+matched: Saved 20 squats
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .totals == [0,0,20] and .pending == 1
+satisfied: .totals == [0,0,20] and .pending == 1
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+a
+$ .agents/skills/verify-hundred/bin/verify-hundred app type 0
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Return
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Enter between 3
+matched: Enter between
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot invalid-0
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/invalid-0.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+a
+$ .agents/skills/verify-hundred/bin/verify-hundred app type 1001
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Return
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Enter between 3
+matched: Enter between
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot invalid
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/invalid.png
+$ sh -c .agents/skills/verify-hundred/bin/verify-hundred app ocr | grep -o 1001 | head -1
+1001
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .totals == [0,0,20] 5
+satisfied: .totals == [0,0,20]
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+z
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Set undone
+matched: Set undone
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .totals == [0,0,0]
+satisfied: .totals == [0,0,0]
+$ sh -c HUNDRED_TOKEN= ~/.t3/worktrees/hundred-public/verify-verification-skill/target/debug/hundred --data-dir "$(realpath ~/.cache/tmp/verify-hundred/sessions/current/data)" history | jq -c '[.events[].change.kind] | sort'
+["cancel","set"]
+$ .agents/skills/verify-hundred/bin/verify-hundred app click 150 200
+$ .agents/skills/verify-hundred/bin/verify-hundred app click 720 477
+$ .agents/skills/verify-hundred/bin/verify-hundred app click 910 477
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .totals == [10,0,0]
+satisfied: .totals == [10,0,0]
+$ .agents/skills/verify-hundred/bin/verify-hundred app cli add crunches 15
+Saved 15 crunches · f36ccd3f-ff1d-45c6-899c-ff30913febd8
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text 15 ?/ ?100
+matched: 15 ?/ ?100
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot cli-picked-up
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/cli-picked-up.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+1
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+a
+$ .agents/skills/verify-hundred/bin/verify-hundred app type 100
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Return
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Saved 100 push-ups
+matched: Saved 100 push-ups
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+2
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+a
+$ .agents/skills/verify-hundred/bin/verify-hundred app type 100
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Return
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Saved 100 crunches
+matched: Saved 100 crunches
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+3
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+a
+$ .agents/skills/verify-hundred/bin/verify-hundred app type 100
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Return
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Saved 100 squats
+matched: Saved 100 squats
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .current_streak == 1
+satisfied: .current_streak == 1
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text 1 ?day streak
+matched: 1 ?day streak
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot complete
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/complete.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app key ctrl+h
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Your days
+matched: Your days
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot history
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/history.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app key Escape
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text History
+matched: History
+$ .agents/skills/verify-hundred/bin/verify-hundred app restart
+relaunched session 20261020T224041Z-1507918
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-status .totals == [110,115,100]
+satisfied: .totals == [110,115,100]
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text 100 ?/ ?100
+matched: 100 ?/ ?100
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot reopened
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/reopened.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app resize 760 640
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot narrow
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/narrow.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app scroll down
+$ .agents/skills/verify-hundred/bin/verify-hundred app wait-text Recent sets
+matched: Recent sets
+$ .agents/skills/verify-hundred/bin/verify-hundred app shot narrow-scrolled
+~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log/narrow-scrolled.png
+$ .agents/skills/verify-hundred/bin/verify-hundred app scroll up
+$ .agents/skills/verify-hundred/bin/verify-hundred app cli export ~/.cache/tmp/verify-hundred/runs/final-20261020/local/archive.json
+Exported 7 records.
+$ stat -c %a ~/.cache/tmp/verify-hundred/runs/final-20261020/local/archive.json
+600
+$ .agents/skills/verify-hundred/bin/verify-hundred app cli export ~/.cache/tmp/verify-hundred/runs/final-20261020/local/archive.json   # expected to fail
+Choose a new archive filename: File exists (os error 17)
+(exit non-zero as expected)
+archive unchanged after refused overwrite
+$ target/debug/hundred --data-dir ~/.cache/tmp/verify-hundred/runs/final-20261020/local/restored restore ~/.cache/tmp/verify-hundred/runs/final-20261020/local/archive.json
+Restored 7 records. Sync to reconcile with the cloud.
+$ target/debug/hundred --data-dir ~/.cache/tmp/verify-hundred/runs/final-20261020/local/restored export ~/.cache/tmp/verify-hundred/runs/final-20261020/local/roundtrip.json
+Exported 7 records.
+$ cmp ~/.cache/tmp/verify-hundred/runs/final-20261020/local/archive.json ~/.cache/tmp/verify-hundred/runs/final-20261020/local/roundtrip.json
+$ sh -c target/debug/hundred --data-dir '~/.cache/tmp/verify-hundred/runs/final-20261020/local/restored' status | jq -c .totals
+[110,115,100]
+$ .agents/skills/verify-hundred/bin/verify-hundred app stop
+stopped session 20261020T224041Z-1507918; evidence kept at ~/.cache/tmp/verify-hundred/runs/final-20261020/local/open-log
+PASS local recipes

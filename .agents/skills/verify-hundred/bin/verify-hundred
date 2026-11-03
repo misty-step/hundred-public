@@ -1,0 +1,621 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016 # Single-quoted code expands in the child shell or in check().
+# Drive Hundred the way its owner does: the real GPUI app on a private Xvfb
+# display, the real CLI, a disposable local Worker, and read-only owner sign-in
+# on the deployed Worker. Usage: verify-hundred help
+set -euo pipefail
+
+# Set only inside sign-in, for its wrong-credential probe of the deployed server.
+unset _verify_hundred_probe
+repo=$(cd "$(dirname "$(realpath "$0")")/../../../.." && pwd)
+home=${VERIFY_HUNDRED_HOME:-$HOME/.cache/tmp/verify-hundred}
+bin=${HUNDRED_BIN:-$repo/target/debug/hundred}
+config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+# Production settings stay outside public source. They resolve from the
+# environment first, then the operator's private launcher.env and verify.env.
+default_server=''
+default_pass_entry=''
+default_owner=''
+redact=${VERIFY_HUNDRED_REDACT:-1}
+worker_port=${VERIFY_HUNDRED_WORKER_PORT:-8798}
+
+die() { echo "verify-hundred: $*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+stamp() { date -u +%Y%m%dT%H%M%SZ; }
+
+usage() {
+  cat <<'EOF'
+verify-hundred <command>
+
+  doctor [--prod]            Read-only readiness check (tools, binary revision, live sessions;
+                             --prod adds health, sign-out refusal and owner identity).
+  build                      cargo build --locked -p hundred (debug binary the drives use).
+  app start [--prod | [--server LOOPBACK-URL --token-file FILE] [--data-dir DIR]] [--evidence DIR]
+                             Launch the real app on a private Xvfb display. Default: offline.
+  app key KEYS...            xdotool key names, e.g. ctrl+3 Return ctrl+z ctrl+h Escape.
+  app type TEXT              Type literal text into the focused field.
+  app click X Y              Pointer click at window coordinates.
+  app resize W H             Resize the window.
+  app scroll up|down [N]     Mouse-wheel N notches (default 4) over the window's centre.
+  app shot NAME              Screenshot to <evidence>/NAME.png; prints the path.
+  app ocr                    Screenshot and print OCR text.
+  app wait-text REGEX [SECS] Wait until OCR text matches the extended regex (case-sensitive:
+                             'Synced' must not match 'Not synced yet'). Default 30s.
+  app status                 CLI `status` JSON for the session's data dir.
+  app wait-status JQ [SECS]  Wait until `status` satisfies a jq test, e.g. '.pending == 0'. Default 45s.
+  app cli ARGS...            Run the CLI against the session's data dir.
+  app restart                Ctrl+Q, wait for exit, relaunch with the same data dir.
+  app stop                   Quit and tear down this session (evidence is kept).
+  worker start               Local workerd + D1 with two new synthetic identities.
+  worker stop                Stop it (simulates backend down); 'worker start' resumes same data.
+  worker purge               Stop it and delete its local D1 and synthetic identities.
+  walk native [DIR]          scripts/walk-native: keyboard/pointer logging, undo, completion,
+                             reopen, history, 760x640, export/restore round trip.
+  walk sync [DIR]            scripts/test-worker with HUNDRED_WALK_SYNC=1: HTTP/D1 acceptance,
+                             outage, restart, automatic retry, second-desktop convergence.
+  sign-in [DIR]              Production owner sign-in, read-only. Commit-safe transcript.
+  cleanup                    Stop every session and Worker this helper started.
+
+Sessions: the newest is used unless VERIFY_HUNDRED_SESSION names one.
+Evidence: $VERIFY_HUNDRED_HOME (default ~/.cache/tmp/verify-hundred)/runs/<UTC>/.
+EOF
+}
+
+need_tools() {
+  local missing=()
+  for tool in "$@"; do command -v "$tool" >/dev/null 2>&1 || missing+=("$tool"); done
+  [ ${#missing[@]} -eq 0 ] || die "missing tools: ${missing[*]}"
+}
+
+new_evidence() {
+  local dir=${1:-$home/runs/$(stamp)}
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  realpath "$dir"
+}
+
+# ---- private configuration -------------------------------------------------
+
+file_value() { # file key
+  [ -f "$1" ] || return 0
+  sed -n "s/^$2=//p" "$1" | tail -1
+}
+
+resolve_prod() {
+  local launcher=${HUNDRED_CONFIG:-$config_home/hundred/launcher.env}
+  local verify_env=$config_home/hundred/verify.env
+  server=${HUNDRED_SERVER:-$(file_value "$launcher" HUNDRED_SERVER)}
+  server=${server:-$default_server}
+  server=${server%/}
+  pass_entry=${HUNDRED_TOKEN_PASS_ENTRY:-$(file_value "$launcher" HUNDRED_TOKEN_PASS_ENTRY)}
+  pass_entry=${pass_entry:-$default_pass_entry}
+  owner=${HUNDRED_EXPECTED_OWNER:-$(file_value "$verify_env" HUNDRED_EXPECTED_OWNER)}
+  owner=${owner:-$default_owner}
+  local gaps=()
+  [ -n "$server" ] || gaps+=("HUNDRED_SERVER (launcher.env)")
+  [ -n "$pass_entry" ] || gaps+=("HUNDRED_TOKEN_PASS_ENTRY (launcher.env)")
+  [ -n "$owner" ] || gaps+=("HUNDRED_EXPECTED_OWNER (verify.env)")
+  [ ${#gaps[@]} -eq 0 ] || die "production config missing: ${gaps[*]}; see features/sign-in.md"
+  case "$server" in https://*) ;; *) die "production server must be https" ;; esac
+}
+
+shown_server() { if [ "$redact" = 1 ]; then echo '<private server>'; else echo "$server"; fi; }
+shown_owner() { if [ "$redact" = 1 ]; then echo '<expected owner>'; else echo "$owner"; fi; }
+# The deployed release and installed build are commits of the private deployment repository.
+shown_rev() { if [ "$redact" = 1 ]; then echo '<private revision>'; else echo "$1"; fi; }
+
+# GET with the owner token from pass. The token never reaches argv or output.
+owner_get() { # path
+  pass-env run -e "HUNDRED_TOKEN=$pass_entry" -- sh -c \
+    'printf "header = \"Authorization: Bearer %s\"\n" "$HUNDRED_TOKEN" | curl -s -m 15 -K - -w "\n%{http_code}" "$1"' \
+    sh "$server$1"
+}
+
+# ---- sessions --------------------------------------------------------------
+
+session_dir() {
+  local id=${VERIFY_HUNDRED_SESSION:-}
+  if [ -z "$id" ]; then
+    [ -L "$home/sessions/current" ] || die "no session; run: verify-hundred app start"
+    realpath "$home/sessions/current"
+  else
+    [ -d "$home/sessions/$id" ] || die "unknown session $id"
+    echo "$home/sessions/$id"
+  fi
+}
+
+alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
+# Kernel start time of a PID (field 22 of /proc/PID/stat), to tell it from a reused PID.
+proc_start() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
+
+# Start a command as its own session leader and record that PID, so teardown
+# can kill exactly the process group this helper started (never by name).
+spawn() { # pidfile log command...
+  local pidfile=$1 log=$2
+  shift 2
+  rm -f "$pidfile"
+  setsid -f sh -c 'echo $$ > "$0"; exec "$@"' "$pidfile" "$@" >>"$log" 2>&1 </dev/null
+  for _ in $(seq 1 50); do
+    if [ -s "$pidfile" ]; then proc_start "$(cat "$pidfile")" > "$pidfile.start"; return 0; fi
+    sleep .1
+  done
+  die "could not start $3"
+}
+ours() { # pidfile: the recorded PID is alive and is still the process we started
+  local pid
+  pid=$(cat "$1" 2>/dev/null || true)
+  alive "$pid" && [ "$(proc_start "$pid")" = "$(cat "$1.start" 2>/dev/null)" ]
+}
+stop_group() { # pidfile
+  local pid
+  ours "$1" || return 0
+  pid=$(cat "$1")
+  kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 40); do alive "$pid" || return 0; sleep .25; done
+  kill -9 -- -"$pid" 2>/dev/null || true
+}
+
+# GPUI's small labels need upscaled, inverted greyscale for reliable OCR.
+ocr_text() { # window scratch-png
+  import -window "$1" "$2"
+  local magick=convert
+  command -v magick >/dev/null 2>&1 && magick=magick
+  "$magick" "$2" -resize 200% -colorspace Gray -negate "$2.ocr.png"
+  tesseract "$2.ocr.png" stdout 2>/dev/null
+}
+
+# Never use Xvfb -displayfd here: on a Hyprland desktop it can claim :0, whose
+# Xwayland has no abstract socket, and unlink the desktop's X socket path.
+# Take the first display from 100 with no lock file and no socket.
+start_xvfb() { # dir
+  local dir=$1 n
+  for n in $(seq 100 299); do
+    [ -e "/tmp/.X$n-lock" ] || [ -e "/tmp/.X11-unix/X$n" ] && continue
+    ! ss -xl 2>/dev/null | grep -q "@/tmp/.X11-unix/X$n " || continue
+    spawn "$dir/xvfb.pid" "$dir/xvfb.log" Xvfb ":$n" -screen 0 1280x1024x24 -nolisten tcp
+    for _ in $(seq 1 50); do
+      alive "$(cat "$dir/xvfb.pid")" || break
+      # Only our own Xvfb's lock counts; another session may have won :$n.
+      if [ -S "/tmp/.X11-unix/X$n" ] && [ "$(tr -d ' \n' < "/tmp/.X$n-lock" 2>/dev/null)" = "$(cat "$dir/xvfb.pid")" ]; then
+        echo "$n" > "$dir/display"
+        return 0
+      fi
+      sleep .1
+    done
+    stop_group "$dir/xvfb.pid"   # lost a race for :$n; try the next one
+  done
+  die "no free X display in :100-:299; see $dir/xvfb.log"
+}
+
+with_display() { # dir
+  DISPLAY=":$(cat "$1/display" 2>/dev/null || echo unset)"
+  export DISPLAY
+  unset WAYLAND_DISPLAY
+}
+
+window_of() { # dir
+  with_display "$1"
+  { xdotool search --onlyvisible --name '^Hundred$' 2>/dev/null || true; } | head -1
+}
+
+launch_app() { # dir
+  local dir=$1 mode
+  mode=$(cat "$dir/mode")
+  with_display "$dir"
+  export XDG_RUNTIME_DIR=$dir/runtime LIBGL_ALWAYS_SOFTWARE=1
+  case "$mode" in
+    offline)
+      spawn "$dir/app.pid" "$dir/app.log" env HUNDRED_TOKEN='' HUNDRED_SERVER='' "$bin" --data-dir "$dir/data"
+      ;;
+    local)
+      spawn "$dir/app.pid" "$dir/app.log" env HUNDRED_SERVER="$(cat "$dir/server")" \
+        sh -c 'HUNDRED_TOKEN=$(cat "$1"); export HUNDRED_TOKEN; exec "$2" --data-dir "$3"' \
+        sh "$(cat "$dir/token-file")" "$bin" "$dir/data"
+      ;;
+    prod)
+      resolve_prod
+      spawn "$dir/app.pid" "$dir/app.log" env HUNDRED_SERVER="$server" \
+        pass-env run -e "HUNDRED_TOKEN=$pass_entry" -- "$bin" --data-dir "$dir/data"
+      ;;
+  esac
+  local window=''
+  for _ in $(seq 1 60); do
+    window=$(window_of "$dir")
+    [ -n "$window" ] && break
+    alive "$(cat "$dir/app.pid")" || die "app exited; see $dir/app.log"
+    sleep .5
+  done
+  [ -n "$window" ] || die "no Hundred window after 30s; see $dir/app.log"
+  xdotool windowfocus "$window" 2>/dev/null || true
+  # Software Vulkan compiles shaders on first paint; ready means the title is legible.
+  for _ in $(seq 1 30); do
+    import -window "$window" "$dir/readiness.png"
+    tesseract "$dir/readiness.png" stdout 2>/dev/null | grep -q Hundred && { sleep 1; return 0; }
+    sleep 1
+  done
+  die "window never painted 'Hundred'; see $dir/readiness.png"
+}
+
+app_start() {
+  local mode=offline prod=0 data='' evidence='' server_arg='' token_file=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --prod) prod=1 ;;
+      --server) server_arg=$2; shift ;;
+      --token-file) token_file=$2; shift ;;
+      --data-dir) data=$2; shift ;;
+      --evidence) evidence=$2; shift ;;
+      *) die "unknown option $1" ;;
+    esac
+    shift
+  done
+  # Production is never written: an owner session starts from an empty store
+  # (the app pushes every pending record on launch), and a token file may only
+  # reach a loopback Worker.
+  if [ "$prod" = 1 ]; then
+    [ -z "$server_arg$token_file" ] || die "--prod takes neither --server nor --token-file"
+    [ -z "$data" ] || die "--prod always starts from an empty store; --data-dir would upload its pending records to the owner's production history"
+    mode=prod
+  elif [ -n "$server_arg" ]; then
+    mode=local
+    case "$server_arg" in
+      http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*) ;;
+      *)
+        [ "${_verify_hundred_probe:-}" = 1 ] || die "--server must be a loopback local Worker; reach production only through --prod or sign-in"
+        [ -z "$data" ] || die "a remote probe always starts from an empty store" ;;
+    esac
+  fi
+  need_tools Xvfb xdotool import tesseract
+  [ -x "$bin" ] || die "no binary at $bin; run: verify-hundred build"
+  if [ "$mode" = local ]; then
+    [ -n "$token_file" ] || die "--server needs --token-file (worker start prints one)"
+    [ -r "$token_file" ] || die "cannot read $token_file"
+  fi
+  local id
+  id=$(stamp)-$$
+  local dir=$home/sessions/$id
+  mkdir -p "$dir/runtime"
+  chmod 700 "$dir" "$dir/runtime"
+  echo "$mode" > "$dir/mode"
+  [ "$mode" != local ] || { echo "$server_arg" > "$dir/server"; realpath "$token_file" > "$dir/token-file"; }
+  if [ -n "$data" ]; then ln -s "$(realpath -m "$data")" "$dir/data"; else mkdir -m 700 "$dir/data"; fi
+  new_evidence "${evidence:-$home/runs/$id}" > "$dir/evidence"
+  # A failed start must not strand an Xvfb or an app holding a credential.
+  # shellcheck disable=SC2064 # Bind this session's directory now.
+  trap "stop_session '$dir'" EXIT
+  start_xvfb "$dir"
+  ln -sfn "$id" "$home/sessions/current"
+  launch_app "$dir"
+  trap - EXIT
+  say "session $id"
+  say "mode $mode"
+  say "display :$(cat "$dir/display")"
+  say "data $(realpath -m "$dir/data")"
+  say "evidence $(cat "$dir/evidence")"
+}
+
+stop_app() { # dir
+  local dir=$1 pid window
+  pid=$(cat "$dir/app.pid" 2>/dev/null || true)
+  alive "$pid" || return 0
+  with_display "$dir"
+  window=$(window_of "$dir")
+  [ -z "$window" ] || xdotool key --window "$window" ctrl+q 2>/dev/null || true
+  for _ in $(seq 1 20); do alive "$pid" || return 0; sleep .25; done
+  stop_group "$dir/app.pid"
+  echo "warn  app ignored Ctrl+Q for 5s and was killed: treat it as a finding" >&2
+  return 1
+}
+
+stop_session() { # dir
+  local dir=$1 status=0
+  [ ! -e "$dir/stopped" ] || return 0
+  stop_app "$dir" || status=1
+  stop_group "$dir/xvfb.pid"
+  # Disposable stores are scratch; a --data-dir the caller supplied is theirs.
+  [ -L "$dir/data" ] || rm -rf "$dir/data"
+  rm -rf "$dir/runtime"
+  # Frames of a session against a non-loopback server may show real history, and
+  # its server file names the private origin; neither outlives the session.
+  local mode server
+  mode=$(cat "$dir/mode" 2>/dev/null || true)
+  server=$(cat "$dir/server" 2>/dev/null || true)
+  case "$mode:$server" in
+    offline:*|local:http://127.0.0.1:*|local:http://localhost:*) ;;
+    *) rm -f "$dir"/*.png ;;
+  esac
+  rm -f "$dir/server" "$dir/token-file"
+  touch "$dir/stopped"
+  return "$status"
+}
+
+app_cmd() {
+  local sub=${1:-}; shift || true
+  [ "$sub" = start ] && { app_start "$@"; return; }
+  local dir window evidence
+  dir=$(session_dir)
+  [ ! -e "$dir/stopped" ] || die "session $(basename "$dir") is stopped"
+  # xdotool and import must talk to this session's Xvfb, never the caller's desktop.
+  with_display "$dir"
+  evidence=$(cat "$dir/evidence")
+  window=$(window_of "$dir")
+  # An owner session is read-only: a stray Enter would log a set to the owner's
+  # production history, and undo only appends. Allow only viewing and sync.
+  if [ "$(cat "$dir/mode")" = prod ]; then
+    case "$sub" in
+      key) for key in "$@"; do case "$key" in ctrl+h|Escape|ctrl+r) ;; *) die "owner session is read-only; key $key refused" ;; esac; done ;;
+      cli) case "${1:-}" in status|history) ;; *) die "owner session is read-only; cli ${1:-} refused" ;; esac ;;
+      type|click) die "owner session is read-only; $sub refused" ;;
+    esac
+  fi
+  case "$sub" in
+    key) [ -n "$window" ] || die "no window"; xdotool key --window "$window" "$@"; sleep .5 ;;
+    type) [ -n "$window" ] || die "no window"; xdotool type --window "$window" "$*"; sleep .3 ;;
+    click) [ -n "$window" ] || die "no window"; xdotool mousemove --window "$window" "$1" "$2" click 1; sleep .5 ;;
+    resize) [ -n "$window" ] || die "no window"; xdotool windowsize "$window" "$1" "$2"; sleep .5 ;;
+    scroll)
+      [ -n "$window" ] || die "no window"
+      local button=5 width height
+      [ "${1:-down}" = up ] && button=4
+      eval "$(xdotool getwindowgeometry --shell "$window")"
+      width=$WIDTH height=$HEIGHT
+      xdotool mousemove --window "$window" $((width / 2)) $((height / 2))
+      xdotool click --repeat "${2:-4}" --delay 50 "$button"
+      sleep .5 ;;
+    shot) [ -n "$window" ] || die "no window"; import -window "$window" "$evidence/$1.png"; say "$evidence/$1.png" ;;
+    ocr) [ -n "$window" ] || die "no window"; ocr_text "$window" "$dir/ocr.png" ;;
+    wait-text)
+      local limit=${2:-30} start=$SECONDS
+      while [ $((SECONDS - start)) -lt "$limit" ]; do
+        window=$(window_of "$dir")
+        if [ -n "$window" ]; then
+          if ocr_text "$window" "$dir/ocr.png" | grep -Eq -- "$1"; then say "matched: $1"; return 0; fi
+        fi
+        sleep 1
+      done
+      echo "verify-hundred: text /$1/ not visible after ${limit}s; last frame $dir/ocr.png" >&2
+      return 1 ;;
+    status) HUNDRED_TOKEN='' "$bin" --data-dir "$dir/data" status ;;
+    wait-status)
+      local limit=${2:-45} start=$SECONDS
+      while [ $((SECONDS - start)) -lt "$limit" ]; do
+        if HUNDRED_TOKEN='' "$bin" --data-dir "$dir/data" status | jq -e "$1" >/dev/null; then say "satisfied: $1"; return 0; fi
+        sleep 1
+      done
+      echo "verify-hundred: status never satisfied $1 in ${limit}s: $(HUNDRED_TOKEN='' "$bin" --data-dir "$dir/data" status | jq -c .)" >&2
+      return 1 ;;
+    cli) HUNDRED_TOKEN='' "$bin" --data-dir "$dir/data" "$@" ;;
+    restart)
+      local killed=0
+      stop_app "$dir" || killed=1
+      launch_app "$dir"
+      say "relaunched session $(basename "$dir")"
+      return "$killed" ;;
+    stop)
+      local killed=0
+      stop_session "$dir" || killed=1
+      say "stopped session $(basename "$dir"); evidence kept at $evidence"
+      return "$killed" ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+# ---- local Worker ------------------------------------------------------------
+
+worker_cmd() {
+  local dir=$home/worker
+  case "${1:-}" in
+    start)
+      need_tools node openssl curl worker-build
+      [ -x "$repo/node_modules/.bin/wrangler" ] || die "run: npm ci --ignore-scripts"
+      if [ -f "$dir/pid" ] && alive "$(cat "$dir/pid")"; then die "worker already running; verify-hundred worker stop"; fi
+      ! curl -s -m 1 "http://127.0.0.1:$worker_port/health" >/dev/null 2>&1 || die "port $worker_port is taken by something this helper did not start"
+      # A restart after `worker stop` keeps its D1 data and identities: that is the outage drill.
+      if [ ! -s "$dir/token-a" ]; then
+        rm -rf "$dir"
+        mkdir -p "$dir/d1"
+        chmod 700 "$dir"
+        (umask 077; openssl rand -hex 32 > "$dir/token-a"; openssl rand -hex 32 > "$dir/token-b")
+      fi
+      local a b credentials
+      # The Worker hashes the bare token, without the file's trailing newline.
+      a=$(tr -d '\n' < "$dir/token-a" | sha256sum | cut -c1-64)
+      b=$(tr -d '\n' < "$dir/token-b" | sha256sum | cut -c1-64)
+      credentials=$(printf '[{"sha256":"%s","owner":"synthetic-a"},{"sha256":"%s","owner":"synthetic-b"}]' "$a" "$b")
+      (cd "$repo" && node_modules/.bin/wrangler d1 migrations apply DB --config wrangler.local.toml --local --persist-to "$dir/d1") >"$dir/migrate.log" 2>&1
+      (cd "$repo" && spawn "$dir/pid" "$dir/worker.log" env WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler dev \
+        --config wrangler.local.toml --local --port "$worker_port" --persist-to "$dir/d1" --var "CREDENTIALS:$credentials")
+      # The first requests compile the Wasm and can take 15s each.
+      for _ in $(seq 1 120); do
+        curl -fsS -m 30 "http://127.0.0.1:$worker_port/health" >/dev/null 2>&1 && break
+        alive "$(cat "$dir/pid")" || die "worker exited; see $dir/worker.log"
+        sleep 1
+      done
+      curl -fsS -m 30 "http://127.0.0.1:$worker_port/health" >/dev/null || die "worker not healthy; see $dir/worker.log"
+      say "server http://127.0.0.1:$worker_port"
+      say "token-file $dir/token-a   (identity synthetic-a)"
+      say "token-file $dir/token-b   (identity synthetic-b)"
+      ;;
+    stop|purge)
+      stop_group "$dir/pid"
+      rm -f "$dir/pid"
+      if [ "$1" = purge ]; then rm -rf "$dir"; say "worker stopped; local D1 and synthetic identities removed"
+      else say "worker stopped; D1 and identities kept for 'worker start' (purge removes them)"; fi
+      ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+# ---- doctor --------------------------------------------------------------------
+
+doctor() {
+  local prod=0 bad=0
+  [ "${1:-}" = --prod ] && prod=1
+  check() { if eval "$2"; then say "ok    $1"; else say "FAIL  $1"; bad=1; fi; }
+  local tools=(Xvfb xdotool import tesseract jq socat curl openssl node cargo worker-build)
+  [ "$prod" = 0 ] || tools+=(pass-env)
+  local missing=()
+  for tool in "${tools[@]}"; do command -v "$tool" >/dev/null 2>&1 || missing+=("$tool"); done
+  check "tools present${missing:+ (missing: ${missing[*]})}" '[ ${#missing[@]} -eq 0 ]'
+  check "wrangler installed (npm ci --ignore-scripts)" '[ -x "$repo/node_modules/.bin/wrangler" ]'
+  local head version=''
+  head=$(git -C "$repo" rev-parse HEAD)
+  [ -x "$bin" ] && version=$("$bin" --version 2>/dev/null || true)
+  check "binary $bin is built from HEAD ${head:0:12} (got: ${version:-none})" '[[ $version == *"($head)" ]]'
+  local live=()
+  for s in "$home"/sessions/*/; do
+    [ -L "${s%/}" ] && continue
+    [ -d "$s" ] && [ ! -e "$s/stopped" ] && alive "$(cat "$s/xvfb.pid" 2>/dev/null)" && live+=("$(basename "$s")")
+  done
+  say "info  live sessions: ${live[*]:-none}"
+  if [ -f "$home/worker/pid" ] && alive "$(cat "$home/worker/pid")"; then say "info  local worker: http://127.0.0.1:$worker_port"; fi
+  if [ -x "$HOME/.local/lib/hundred/hundred" ]; then
+    local installed
+    installed=$("$HOME/.local/lib/hundred/hundred" --version 2>/dev/null || echo unreadable)
+    [ "$redact" = 0 ] || installed=${installed%% (*}" ($(shown_rev x))"
+    say "info  installed app: $installed"
+  fi
+  if [ "$prod" = 1 ]; then
+    resolve_prod
+    local health code body
+    # curl -s, not -sS: its error text would name the private host.
+    health=$(curl -s -m 15 "$server/health" || true)
+    check "$(shown_server)/health ok (release $(shown_rev "$(jq -r .release <<<"$health" 2>/dev/null)"))" 'jq -e .ok <<<"$health" >/dev/null 2>&1'
+    code=$(curl -s -m 15 -o /dev/null -w '%{http_code}' "$server/v1/identity" || true)
+    check "signed-out identity request refused (HTTP $code)" '[ "$code" = 401 ]'
+    if pass-env run -e "HUNDRED_TOKEN=$pass_entry" -- true 2>/dev/null; then
+      body=$(owner_get /v1/identity || true)
+      check "owner credential resolves to $(shown_owner) (HTTP $(tail -1 <<<"$body"))" \
+        '[ "$(tail -1 <<<"$body")" = 200 ] && [ "$(head -n -1 <<<"$body" | jq -r .owner)" = "$owner" ]'
+    else
+      check "owner pass entry readable (pass-env; unlock pass/gpg agent)" false
+    fi
+  fi
+  return "$bad"
+}
+
+# ---- journeys ------------------------------------------------------------------
+
+walk_cmd() {
+  local kind=${1:-} evidence
+  evidence=$(new_evidence "${2:-}")
+  [ -x "$bin" ] || die "no binary at $bin; run: verify-hundred build"
+  case "$kind" in
+    native) (cd "$repo" && scripts/walk-native "$bin" "$evidence/native") ;;
+    sync)
+      local port
+      for port in 8797 8877; do
+        ! ss -ltn 2>/dev/null | grep -q "127.0.0.1:$port " || die "port $port is in use; scripts/test-worker and scripts/walk-sync need 8797 and 8877"
+      done
+      (cd "$repo" && HUNDRED_WALK_SYNC=1 WS_EVIDENCE=$evidence scripts/test-worker 2>&1 | tee "$evidence/test-worker.log") ;;
+    *) usage; exit 2 ;;
+  esac
+  say "evidence $evidence"
+}
+
+sign_in() {
+  need_tools pass-env curl jq Xvfb xdotool import tesseract openssl
+  resolve_prod
+  local evidence log private
+  evidence=$(new_evidence "${1:-}")
+  # Owner frames hold real history: keep them outside any checkout, whatever DIR is.
+  private=$(new_evidence "$home/private/$(stamp)")
+  log=$evidence/sign-in.txt
+  : > "$log"
+  note() { printf '%s\n' "$*" | tee -a "$log"; }
+  # Every session this journey starts is stopped, and the scratch token removed,
+  # however it ends.
+  sign_in_sessions=() sign_in_bad=''
+  trap 'for s in "${sign_in_sessions[@]}"; do stop_session "$home/sessions/$s" || true; done; [ -z "$sign_in_bad" ] || rm -f "$sign_in_bad"' EXIT
+  note "# Hundred owner sign-in, $(date -u +%FT%TZ)"
+  note "server: $(shown_server); expected owner: $(shown_owner); credential: pass entry $([ "$redact" = 1 ] && echo 'from private config' || echo "$pass_entry")"
+  note "client: $("$bin" --version)"
+  local health code body
+  health=$(curl -s -m 15 "$server/health") || die "GET /health failed (curl exit $?)"
+  note "GET /health -> ok=$(jq -r .ok <<<"$health"), release $(shown_rev "$(jq -r .release <<<"$health")")"
+  jq -e .ok <<<"$health" >/dev/null || die "health failed"
+  code=$(curl -s -m 15 -o /dev/null -w '%{http_code}' "$server/v1/identity") || die "GET /v1/identity failed (curl exit $?)"
+  note "GET /v1/identity signed out -> HTTP $code"
+  [ "$code" = 401 ] || die "signed-out request was not refused"
+  body=$(openssl rand -hex 32 | sh -c 'IFS= read -r t; printf "header = \"Authorization: Bearer %s\"\n" "$t" | curl -s -m 15 -K - -w "\n%{http_code}" "$1"' sh "$server/v1/identity")
+  note "GET /v1/identity wrong credential -> HTTP $(tail -1 <<<"$body") $(head -n -1 <<<"$body")"
+  [ "$(tail -1 <<<"$body")" = 401 ] || die "a random credential was not refused"
+  pass-env run -e "HUNDRED_TOKEN=$pass_entry" -- true 2>/dev/null \
+    || die "owner sign-in UNPROVEN: pass entry unreadable (unlock pass / gpg-agent for the operator's store)"
+  body=$(owner_get /v1/identity)
+  local got
+  got=$(head -n -1 <<<"$body" | jq -r .owner)
+  note "GET /v1/identity owner credential -> HTTP $(tail -1 <<<"$body"), owner matches expected: $([ "$got" = "$owner" ] && echo yes || echo NO)"
+  [ "$(tail -1 <<<"$body")" = 200 ] && [ "$got" = "$owner" ] || die "owner identity mismatch"
+
+  # Owner-only view: the real app, owner credential, disposable store. It pulls
+  # the owner's history (read-only: an empty store has nothing to upload).
+  local out
+  out=$(app_start --prod --evidence "$private")
+  VERIFY_HUNDRED_SESSION=$(sed -n 's/^session //p' <<<"$out")
+  export VERIFY_HUNDRED_SESSION
+  sign_in_sessions+=("$VERIFY_HUNDRED_SESSION")
+  if ! app_cmd wait-text 'Synced' 60 >/dev/null; then
+    app_cmd shot owner-failed >/dev/null || true
+    die "owner app never showed Synced; private frame at $private/owner-failed.png"
+  fi
+  note "desktop app (owner credential, empty store): sync label 'Synced' visible"
+  # The owner-only view: Recent sets lists real rows (matched, never printed).
+  app_cmd wait-text '\+[0-9]+ +(Push-ups|Crunches|Squats)' 30 >/dev/null \
+    || die "the window never listed the owner's recent sets"
+  note "desktop app: Recent sets lists the owner's sets"
+  app_cmd shot owner-synced >/dev/null
+  # The header band (title, date, sync label) carries no exercise data.
+  local magick=convert
+  command -v magick >/dev/null 2>&1 && magick=magick
+  "$magick" "$private/owner-synced.png" -crop 980x140+0+0 +repage "$evidence/owner-synced-header.png"
+  local status pulled
+  status=$(app_cmd status)
+  pulled=$(app_cmd cli history | jq '.events | length > 0')
+  note "CLI status on that store: pending=$(jq .pending <<<"$status"), owner history pulled: $pulled"
+  jq -e '.pending == 0' <<<"$status" >/dev/null || die "owner store still has pending records"
+  [ "$pulled" = true ] || die "the owner's history did not reach the app"
+  app_cmd stop >/dev/null
+  note "owner store removed; full owner screenshot kept outside the evidence directory (personal data); commit-safe header crop: owner-synced-header.png"
+
+  # Wrong identity in the real app: a random credential must not read as Synced.
+  sign_in_bad=$(mktemp "$home/bad-token.XXXXXX")
+  openssl rand -hex 32 > "$sign_in_bad"
+  out=$(_verify_hundred_probe=1 app_start --server "$server" --token-file "$sign_in_bad" --evidence "$evidence")
+  VERIFY_HUNDRED_SESSION=$(sed -n 's/^session //p' <<<"$out")
+  export VERIFY_HUNDRED_SESSION
+  sign_in_sessions+=("$VERIFY_HUNDRED_SESSION")
+  if ! app_cmd wait-text 'credential rejected' 45 >/dev/null; then
+    app_cmd shot wrong-credential >/dev/null || true
+    die "wrong credential did not show 'Sync credential rejected'"
+  fi
+  note "desktop app (random credential): 'Sync credential rejected' visible, never 'Synced'"
+  app_cmd shot wrong-credential >/dev/null
+  app_cmd stop >/dev/null
+  note "PASS owner sign-in: signed-out and wrong credentials refused; owner credential resolves to the expected owner, the app syncs with nothing pending, and the owner's history renders"
+  say "evidence $evidence"
+  say "private $private"
+}
+
+cleanup_all() {
+  for s in "$home"/sessions/*/; do
+    [ -L "${s%/}" ] && continue
+    [ -d "$s" ] && [ ! -e "$s/stopped" ] && stop_session "${s%/}" && say "stopped $(basename "$s")"
+  done
+  rm -f "$home/sessions/current"
+  worker_cmd purge >/dev/null
+  say "cleanup done; evidence remains under $home/runs"
+}
+
+cmd=${1:-help}; shift || true
+case "$cmd" in
+  doctor) doctor "$@" ;;
+  build) (cd "$repo" && cargo build --locked -p hundred) ;;
+  app) app_cmd "$@" ;;
+  worker) worker_cmd "$@" ;;
+  walk) walk_cmd "$@" ;;
+  sign-in) sign_in "$@" ;;
+  cleanup) cleanup_all ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac
